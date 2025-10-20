@@ -66,7 +66,7 @@ class LidarConfig:
                  preset: str = "VLP-16",
                  force_azimuth_steps: int = None,
                  save_ply: bool = True,
-                 auto_expose: bool = True,
+                 auto_expose: bool = False,
                  global_scale: float = 1.0,
                  rpm: float = None,
                  continuous_spin: bool = True,
@@ -76,6 +76,7 @@ class LidarConfig:
                  secondary_min_residual: float = 0.05,
                  secondary_ray_bias: float = 5e-4,
                  specular_falloff_power: float = 1.0,
+                 secondary_extinction: float = 0.0,
                  ):
 
         if preset not in LIDAR_PRESETS:
@@ -149,6 +150,7 @@ class LidarConfig:
 
         # Intensity tuning
         self.specular_falloff_power = specular_falloff_power
+        self.secondary_extinction = secondary_extinction
 
     def to_dict(self):
         # Convert configuration to serializable dict
@@ -179,6 +181,7 @@ class LidarConfig:
             "secondary_min_residual": self.secondary_min_residual,
             "secondary_ray_bias": self.secondary_ray_bias,
             "specular_falloff_power": self.specular_falloff_power,
+            "secondary_extinction": self.secondary_extinction,
         }
 
     def __str__(self):

@@ -9,7 +9,7 @@ This tool generates LiDAR ground truth for Infinigen indoor scenes with indoor-f
 - Rolling-shutter and continuous-spin timing for realistic azimuth sampling
 - Optional override for azimuth column count and output frame (sensor / camera / world)
 - Interactive Open3D viewer with ring/intensity coloring and trajectory overlay
-- Exports timestamps, TUM poses, metadata JSON, and PLY point clouds with reflectance/normals per frame
+- Exports timestamps, TUM poses, metadata JSON, and PLY point clouds with return power, range, normals per frame
 
 ## Usage
 
@@ -53,6 +53,9 @@ Key arguments:
 - `--preset`: Sensor preset loaded from `lidar_config.py`
 - `--force-azimuth-steps`: Explicit azimuth column count
 - `--ply-frame`: Output frame for PLYs (`sensor`, `camera`, `world`)
+- `--secondary`: Enable pass-through secondary returns for transmissive surfaces
+- `--secondary-extinction`: Beer–Lambert extinction coefficient (1/m) applied when `--secondary` is active
+- `--auto-expose`: Enable percentile-based per-frame scaling for the `intensity` column (default is stable, physically based `return_power`)
 - `--seed`: Seed for numpy/random (continuous spin still advances phase per frame)
 
 ### Viewer
@@ -74,20 +77,20 @@ Defaults are tuned for indoor scanning:
 
 1. Distance falloff of `1 / r^2` (physical inverse-square; override as needed)
 2. Optional per-frame auto exposure: 95th percentile mapped to intensity 200
-3. Principled BSDF sampling for diffuse/specular reflectance
+3. Principled BSDF sampling for diffuse/specular return power and transmissive attenuation
 4. Minimum range 5 cm to retain close geometry
 5. No random dropout; grazing acceptance allows all non-backfacing hits
 6. Percentile-based coloring in the viewer for stable contrast
 
 ## Outputs
 
-- `lidar_frame_XXXX.ply`: Per-frame point clouds in the chosen frame (with intensity, reflectance, normals)
+- `lidar_frame_XXXX.ply`: Per-frame point clouds in the chosen frame (with intensity, return power, range, normals)
 - `lidar_config.json`: Serialized `LidarConfig` used for the run
 - `frame_metadata.json`: Per-frame point counts and intensity scale factors
 - `trajectory.json`: Camera translations indexed by frame
 - `timestamps.txt`: Seconds from the first frame (derived from scene FPS)
 - `poses_tum.txt`: TUM-format poses `timestamp tx ty tz qx qy qz qw`
-> The `intensity` column in the PLY is per-frame scaled for visualization. Use the `reflectance` float column for training or quantitative analysis.
+> The `intensity` column in the PLY is per-frame scaled for visualization. Use the `return_power` float column (and `range_m`) for training or quantitative analysis. The `exposure_scale` column records any per-return exposure adjustment when auto exposure is enabled.
 
 ### PLY Structure
 
@@ -106,8 +109,11 @@ property float elevation
 property float time_offset
 property uchar return_id
 property uchar num_returns
+property float range_m
 property float cos_incidence    # when plyfile installed
 property uchar mat_class        # when plyfile installed
+property float return_power     # when plyfile installed
+property float exposure_scale   # when auto exposure enabled
 end_header
 ...
 ```

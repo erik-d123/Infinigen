@@ -165,7 +165,10 @@ class LidarViewer:
                     'num_returns': 'num_returns',
                     'cos_incidence': 'cos_incidence',
                     'mat_class': 'mat_class',
-                    'reflectance': 'reflectance',
+                    'return_power': 'return_power',
+                    'reflectance': 'return_power',  # backward compatibility
+                    'range_m': 'range_m',
+                    'exposure_scale': 'exposure_scale',
                 }
                 for ply_name, out_name in name_map.items():
                     if ply_name in vtx.data.dtype.names:
@@ -185,6 +188,8 @@ class LidarViewer:
         self.camera_positions[idx] = cam_pos
         # Distances (respect stored frame)
         fields.setdefault('distances', self.compute_distances(points, cam_pos))
+        if 'range_m' not in fields:
+            fields['range_m'] = fields['distances']
         return {
             'file_path': str(path),
             'points': points,

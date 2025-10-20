@@ -7,6 +7,7 @@ import math
 import bpy
 
 _MATERIAL_CACHE: dict[int, dict] = {}
+_CACHE_LAST_FRAME = None
 
 
 def _find_principled_bsdf(mat: bpy.types.Material):
@@ -55,7 +56,19 @@ def _luma(rgb):
     return max(0.0, min(1.0, 0.2126 * r + 0.7152 * g + 0.0722 * b))
 
 
+def _maybe_clear_cache():
+    global _CACHE_LAST_FRAME
+    try:
+        frame = bpy.context.scene.frame_current
+    except Exception:
+        frame = None
+    if frame != _CACHE_LAST_FRAME:
+        _MATERIAL_CACHE.clear()
+        _CACHE_LAST_FRAME = frame
+
+
 def extract_material_properties(obj, poly_index, depsgraph):
+    _maybe_clear_cache()
     mat = get_material_from_hit(obj, poly_index, depsgraph)
 
     defaults = {
@@ -145,43 +158,58 @@ def transmissive_reflectance(cos_i: float, ior: float) -> float:
     return float(F)
 
 
+def _derive_f0_ior(specular: float, ior: float | None):
+    if ior and ior > 1.0:
+        F0 = ((ior - 1.0) / (ior + 1.0)) ** 2
+        return F0, ior
+    specular = max(0.0, min(1.0, specular))
+    F0 = 0.08 * specular
+    sqrtF0 = math.sqrt(max(1e-8, F0))
+    n = (1.0 + sqrtF0) / max(1e-8, (1.0 - sqrtF0))
+    return F0, float(n)
+
+
 def compute_intensity(props: dict, cos_i: float, R: float, cfg):
     def _cfg(name, default):
         return getattr(cfg, name, default)
 
     dist_p = float(_cfg("distance_power", 2.0))
     beta = float(_cfg("beta_atm", 0.0))
-    spec_power = float(_cfg("specular_falloff_power", 1.0))
 
     metallic = float(props.get("metallic", 0.0))
-    rough = float(props.get("roughness", 0.5))
+    rough = max(0.0, min(1.0, float(props.get("roughness", 0.5))))
     transmission = float(props.get("transmission", 0.0) or 0.0)
     opacity = float(props.get("opacity", 1.0) or 1.0)
-    ior = float(props.get("ior", 1.45) or 1.45)
-    is_glass_hint = bool(props.get("is_glass_hint", False))
+    specular = float(props.get("specular", 0.5))
+    base_rgb = props.get("base_color", (0.8, 0.8, 0.8))
+    nir_reflectance = float(props.get("nir_reflectance", _luma(base_rgb)))
 
-    F0_lum = float(props.get("F0_lum", 0.04))
-    nir_reflectance = float(props.get("nir_reflectance", 0.8))
-
-    cos_i = max(0.0, float(cos_i))
-    if cos_i <= 0.0:
-        return 0.0, 0.0
+    cos_i = max(1e-4, float(cos_i))
     R = max(1e-3, float(R))
 
     trans_raw = max(transmission, 1.0 - opacity)
-    if is_glass_hint:
-        trans_raw = max(trans_raw, 0.5)
     trans_frac = max(0.0, min(1.0, trans_raw))
 
+    F0_lum, ior = _derive_f0_ior(specular, float(props.get("ior", None)))
+    if metallic >= 1.0:
+        F0_lum = max(0.02, min(0.98, _luma(base_rgb)))
+
+    a = max(1e-4, rough * rough)
+    denom = (cos_i * cos_i * (a * a - 1.0) + 1.0)
+    D = (a * a) / (math.pi * denom * denom)
+    k = (a + 1.0) * (a + 1.0) / 8.0
+    G1 = cos_i / (cos_i * (1.0 - k) + k)
+    G = G1 * G1
+    F = F0_lum + (1.0 - F0_lum) * (1.0 - cos_i) ** 5
+    spec_term = (F * D * G) / (4.0 * cos_i * cos_i)
+
     diffuse = (1.0 - metallic) * (1.0 - trans_frac) * (nir_reflectance / math.pi) * cos_i
-    spec_scale = (1.0 - trans_frac) * max(0.0, 1.0 - rough) ** 2
-    rho_s = F0_lum * spec_scale * (cos_i ** spec_power)
+    specular_term = (1.0 - trans_frac) * spec_term
 
-    reflectivity = diffuse + rho_s
-
-    att_rng = 1.0 / (R ** dist_p)
-    att_atm = math.exp(-2.0 * beta * R) if beta > 0.0 else 1.0
-    I = reflectivity * att_rng * att_atm
+    reflectivity = diffuse + specular_term
+    I = reflectivity / (R ** dist_p)
+    if beta > 0.0:
+        I *= math.exp(-2.0 * beta * R)
 
     Fsurf = transmissive_reflectance(cos_i, ior if ior else 1.45)
     residual_T = max(0.0, trans_frac * (1.0 - Fsurf))

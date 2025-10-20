@@ -203,8 +203,8 @@ def test_incidence_angle():
     cam.rotation_euler = (math.radians(35.0), 0.0, 0.0)
     nhit_tilt, _, res_tilt = run_lidar_sample(cam, cfg, frame=1, phase=phase)
 
-    refl_normal = res_normal["reflectance"] if res_normal else np.array([])
-    refl_tilt = res_tilt["reflectance"] if res_tilt else np.array([])
+    refl_normal = res_normal["return_power"] if res_normal else np.array([])
+    refl_tilt = res_tilt["return_power"] if res_tilt else np.array([])
 
     return {
         "hits_normal": nhit_normal,
@@ -270,7 +270,7 @@ def test_transmissive_secondary():
         if num_returns is not None and len(num_returns):
             max_returns = int(np.max(num_returns))
         ret_ids = res.get("return_id")
-        refl = res.get("reflectance")
+        refl = res.get("return_power")
         if ret_ids is not None and refl is not None and len(ret_ids) == len(refl):
             ret_ids = np.asarray(ret_ids)
             refl = np.asarray(refl)
@@ -310,8 +310,8 @@ def test_transmissive_material():
 
     hits_glass, _, res_glass = run_lidar_sample(cam, cfg, frame=1, phase=phase)
 
-    mean_opaque = float(np.mean(res_opaque["reflectance"])) if res_opaque else 0.0
-    mean_glass = float(np.mean(res_glass["reflectance"])) if res_glass else 0.0
+    mean_opaque = float(np.mean(res_opaque["return_power"])) if res_opaque else 0.0
+    mean_glass = float(np.mean(res_glass["return_power"])) if res_glass else 0.0
 
     return {
         "hits": (hits_opaque, hits_glass),

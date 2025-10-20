@@ -14,6 +14,31 @@ try:
 except Exception:
     from intensity_model import extract_material_properties, compute_intensity, classify_material
 
+def _beer_lambert_transmittance(obj, depsgraph, entry_loc, direction_world, bias, extinction_coeff):
+    if extinction_coeff <= 0.0:
+        return 1.0
+    try:
+        eval_obj = obj.evaluated_get(depsgraph)
+    except ReferenceError:
+        return 1.0
+    mat_inv = eval_obj.matrix_world.inverted()
+    origin_world = entry_loc + direction_world * max(bias, 1e-4)
+    origin_local = mat_inv @ origin_world
+    dir_local = mat_inv.to_3x3() @ direction_world
+    if dir_local.length_squared == 0.0:
+        return 1.0
+    dir_local.normalize()
+    try:
+        hit, location_local, *_ = eval_obj.ray_cast(origin_local, dir_local)
+    except AttributeError:
+        return 1.0
+    if not hit:
+        return 1.0
+    exit_world = eval_obj.matrix_world @ location_local
+    thickness = max(0.0, (exit_world - entry_loc).length)
+    return math.exp(-extinction_coeff * thickness)
+
+
 def generate_sensor_rays(config):
     # Generate ray directions for LiDAR sensor pattern
     elev = np.array([math.radians(a) for a in config.elevation_angles_deg], dtype=np.float32)
@@ -45,19 +70,21 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
     
     # Output collections
     points_world, rings = [], []
-    intens_raw, reflectance = [], []
+    intens_raw, return_power = [], []
+    ranges_m = []
+    exposure_scales = []
     az_hit, el_hit, t_hit = [], [], []
     ret_id, num_rets = [], []
     cos_list, mat_class_list = [], []  # Debug/analysis fields
     normals_world = []
-    eps = 1e-3  # offset to avoid immediate self-intersections
+    base_eps = max(1e-4, 1e-5 * max(cfg.min_range, 1.0))  # offset to avoid immediate self-intersections
 
     for i, d in enumerate(world_dirs):
         # Random dropout simulation
         if random.random() < cfg.dropout_prob:
             continue
         dv = Vector(d)
-        origin_eps = origin_world + dv * eps
+        origin_eps = origin_world + dv * base_eps
         hit, loc, nrm, poly_idx, obj, _ = scene.ray_cast(
             depsgraph, origin_eps, dv, distance=cfg.max_range
         )
@@ -67,11 +94,12 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
 
         returns = []
 
-        def append_return(point_vec, intensity_val, cos_val, normal_vec, mat_cls, return_index, total_returns):
+        def append_return(point_vec, intensity_val, cos_val, normal_vec, mat_cls, range_val, return_index, total_returns, exposure_scale):
             points_world.append(np.array(point_vec, dtype=np.float32))
             rings.append(ring_ids[i])
             intens_raw.append(intensity_val)
-            reflectance.append(intensity_val)
+            return_power.append(intensity_val)
+            ranges_m.append(range_val)
             az_hit.append(az_rad[i])
             el_hit.append(el_rad[i])
             t_hit.append(t_offsets[i])
@@ -80,6 +108,7 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
             cos_list.append(cos_val)
             mat_class_list.append(mat_cls)
             normals_world.append(np.array(normal_vec, dtype=np.float32))
+            exposure_scales.append(exposure_scale)
 
         dist = (loc - origin_world).length
         if cfg.min_range <= dist <= cfg.max_range:
@@ -94,6 +123,7 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
                     sigma_r = sigma_floor + 0.02 / math.sqrt(max(I01, 1e-6))
                     dist_noisy = max(cfg.min_range, dist + random.gauss(0.0, sigma_r))
                     loc_noisy = origin_world + dv * dist_noisy
+                    exposure_scale_primary = 1.0
                     returns.append(
                         {
                             "point": loc_noisy,
@@ -101,10 +131,11 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
                             "cos": cos_i,
                             "normal": n,
                             "mat_class": classify_material(props),
+                            "range": dist_noisy,
+                            "exposure": exposure_scale_primary,
                         }
                     )
-                else:
-                    residual_T = max(0.0, residual_T)
+                residual_T = max(0.0, residual_T)
 
                 if (
                     cfg.enable_secondary
@@ -124,7 +155,14 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
                             if cos_i2 >= cfg.grazing_dropout_cos_thresh:
                                 props2 = extract_material_properties(obj2, poly_idx2, depsgraph)
                                 I02, _ = compute_intensity(props2, cos_i2, total_dist, cfg)
-                                I02 *= residual_T
+
+                                transmission_scale = residual_T
+                                if cfg.secondary_extinction > 0.0:
+                                    transmission_scale *= _beer_lambert_transmittance(
+                                        obj, depsgraph, loc, dv, cfg.secondary_ray_bias, cfg.secondary_extinction
+                                    )
+
+                                I02 *= transmission_scale
                                 if I02 > 0.0:
                                     I02 *= max(0.0, 1.0 + random.gauss(0.0, cfg.intensity_jitter_std))
                                     sigma_floor2 = cfg.range_noise_a + cfg.range_noise_b * total_dist
@@ -138,6 +176,8 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
                                             "cos": cos_i2,
                                             "normal": n2,
                                             "mat_class": classify_material(props2),
+                                            "range": dist_noisy2,
+                                            "exposure": transmission_scale,
                                         }
                                     )
 
@@ -152,8 +192,10 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
                 ret["cos"],
                 ret["normal"],
                 ret["mat_class"],
+                ret["range"],
                 idx_ret,
                 total_returns,
+                ret["exposure"],
             )
 
     if not points_world:
@@ -162,7 +204,8 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
     # Auto-exposure: map percentile to target intensity
     raw = np.array(intens_raw, dtype=np.float32)
     if cfg.auto_expose and raw.size >= 4:
-        p = np.percentile(raw[raw > 0], cfg.target_percentile) if np.any(raw > 0) else 1.0
+        positive = raw[raw > 0]
+        p = np.percentile(positive, cfg.target_percentile) if positive.size else 1.0
         scale = (cfg.target_intensity / 255.0) / max(1e-6, p)
     else:
         scale = float(cfg.global_scale) / 255.0
@@ -174,7 +217,8 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
         "points_world": np.vstack(points_world),
         "ring_ids": np.array(rings, dtype=np.uint16),
         "intensities_u8": ints_u8,
-        "reflectance": np.array(reflectance, dtype=np.float32),
+        "return_power": np.array(return_power, dtype=np.float32),
+        "range_m": np.array(ranges_m, dtype=np.float32),
         "azimuth_rad": np.array(az_hit, dtype=np.float32),
         "elevation_rad": np.array(el_hit, dtype=np.float32),
         "time_offset": np.array(t_hit, dtype=np.float32),
@@ -184,4 +228,5 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
         "cos_incidence": np.array(cos_list, dtype=np.float32),
         "mat_class": np.array(mat_class_list, dtype=np.uint8),
         "normals_world": np.vstack(normals_world),
+        "exposure_scale": np.array(exposure_scales, dtype=np.float32),
     }
