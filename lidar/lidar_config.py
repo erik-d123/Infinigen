@@ -75,8 +75,8 @@ class LidarConfig:
                  enable_secondary: bool = False,
                  secondary_min_residual: float = 0.05,
                  secondary_ray_bias: float = 5e-4,
-                 specular_falloff_power: float = 1.0,
                  secondary_extinction: float = 0.0,
+                 secondary_min_cos: float = 0.95,
                  ):
 
         if preset not in LIDAR_PRESETS:
@@ -147,10 +147,8 @@ class LidarConfig:
         self.enable_secondary = enable_secondary
         self.secondary_min_residual = secondary_min_residual
         self.secondary_ray_bias = secondary_ray_bias
-
-        # Intensity tuning
-        self.specular_falloff_power = specular_falloff_power
         self.secondary_extinction = secondary_extinction
+        self.secondary_min_cos = secondary_min_cos
 
     def to_dict(self):
         # Convert configuration to serializable dict
@@ -180,8 +178,8 @@ class LidarConfig:
             "enable_secondary": self.enable_secondary,
             "secondary_min_residual": self.secondary_min_residual,
             "secondary_ray_bias": self.secondary_ray_bias,
-            "specular_falloff_power": self.specular_falloff_power,
             "secondary_extinction": self.secondary_extinction,
+            "secondary_min_cos": self.secondary_min_cos,
         }
 
     def __str__(self):

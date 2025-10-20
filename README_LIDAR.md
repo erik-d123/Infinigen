@@ -56,6 +56,7 @@ Key arguments:
 - `--secondary`: Enable pass-through secondary returns for transmissive surfaces
 - `--secondary-extinction`: Beer–Lambert extinction coefficient (1/m) applied when `--secondary` is active
 - `--auto-expose`: Enable percentile-based per-frame scaling for the `intensity` column (default is stable, physically based `return_power`)
+- `--secondary-min-cos`: Minimum cosine of incidence needed to spawn a pass-through return (default 0.95)
 - `--seed`: Seed for numpy/random (continuous spin still advances phase per frame)
 
 ### Viewer

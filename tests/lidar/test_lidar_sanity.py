@@ -79,6 +79,7 @@ def test_material_change_affects_reflectance():
 
     hits_base, phase, res_base = lidar_debug.run_lidar_sample(cam, cfg, frame=1)
     assert_positive(hits_base, "baseline hits")
+    assert np.all(np.asarray(res_base["range_m"]) > 0)
     refl_base = np.mean(res_base["return_power"])
 
     metallic_mat = lidar_debug.make_principled_material(

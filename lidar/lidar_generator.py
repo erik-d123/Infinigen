@@ -111,7 +111,7 @@ def parse_args(argv):
     p.add_argument("--secondary-min-residual", type=float, default=0.05, help="Minimum residual transmission to spawn a secondary return")
     p.add_argument("--secondary-ray-bias", type=float, default=5e-4, help="Offset (m) applied when spawning secondary rays past transmissive surfaces")
     p.add_argument("--secondary-extinction", type=float, default=0.0, help="Extinction coefficient (1/m) for transmissive media")
-    p.add_argument("--specular-falloff-power", type=float, default=1.0, help="Exponent for specular intensity falloff with incidence angle")
+    p.add_argument("--secondary-min-cos", type=float, default=0.95, help="Minimum cosine incidence to spawn a pass-through secondary")
     p.add_argument("--auto-expose", action="store_true", help="Enable per-frame percentile exposure scaling for U8 intensity")
     p.add_argument("--seed", type=int, default=None, help="Random seed")
     return p.parse_args(argv)
@@ -156,8 +156,8 @@ def main():
         enable_secondary=args.secondary,
         secondary_min_residual=args.secondary_min_residual,
         secondary_ray_bias=args.secondary_ray_bias,
-        specular_falloff_power=args.specular_falloff_power,
         secondary_extinction=args.secondary_extinction,
+        secondary_min_cos=args.secondary_min_cos,
     )
 
     # Setup output directory and save configuration

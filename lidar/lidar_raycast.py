@@ -141,6 +141,7 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
                     cfg.enable_secondary
                     and residual_T > cfg.secondary_min_residual
                     and (cfg.max_range - dist) > cfg.secondary_ray_bias
+                    and cos_i >= getattr(cfg, "secondary_min_cos", 0.95)
                 ):
                     origin_second = loc + dv * cfg.secondary_ray_bias
                     remaining_dist = max(cfg.max_range - dist, cfg.secondary_ray_bias)
@@ -156,11 +157,11 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
                                 props2 = extract_material_properties(obj2, poly_idx2, depsgraph)
                                 I02, _ = compute_intensity(props2, cos_i2, total_dist, cfg)
 
-                                transmission_scale = residual_T
-                                if cfg.secondary_extinction > 0.0:
-                                    transmission_scale *= _beer_lambert_transmittance(
-                                        obj, depsgraph, loc, dv, cfg.secondary_ray_bias, cfg.secondary_extinction
-                                    )
+                                    transmission_scale = residual_T
+                                    if cfg.secondary_extinction > 0.0:
+                                        transmission_scale *= _beer_lambert_transmittance(
+                                            obj, depsgraph, loc, dv, cfg.secondary_ray_bias, cfg.secondary_extinction
+                                        )
 
                                 I02 *= transmission_scale
                                 if I02 > 0.0:
@@ -184,6 +185,7 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
         if not returns:
             continue
 
+        returns.sort(key=lambda r: r["range"])
         total_returns = len(returns)
         for idx_ret, ret in enumerate(returns, start=1):
             append_return(
