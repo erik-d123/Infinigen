@@ -1,0 +1,6 @@
+Material,Base Color (RGB),Reflectivity (ρ),Metallic,Roughness
+Matte_White,0.90,0.90,0.90,0.5400,0.00,0.80
+Polished_Metal,0.80,0.80,0.80,1.1400,1.00,0.10
+Matte_Black,0.05,0.05,0.05,0.0275,0.00,0.90
+Glass_Like,0.80,0.80,0.90,0.7705,0.00,0.10
+Red_Material,0.80,0.10,0.10,0.2325,0.00,0.50
