@@ -5,11 +5,11 @@ This tool generates LiDAR ground truth for Infinigen indoor scenes with indoor-f
 ## Features
 
 - Indoor-oriented sensor presets: `VLP-16`, `HDL-32E`, `HDL-64E`, `OS1-128`
-- Material-aware intensity model (diffuse + specular) with percentile auto exposure
-- Rolling-shutter and continuous-spin timing for realistic azimuth sampling
+- Material-aware intensity model (diffuse + specular) with optional percentile auto exposure
+- Rolling-shutter and continuous-spin timing with configurable temporal sub-sampling
 - Optional override for azimuth column count and output frame (sensor / camera / world)
 - Interactive Open3D viewer with ring/intensity coloring and trajectory overlay
-- Exports timestamps, TUM poses, metadata JSON, and PLY point clouds with return power, range, normals per frame
+- Exports timestamps, TUM poses, metadata JSON, and PLY point clouds with return power, range, normals per frame (ASCII or binary)
 
 ## Usage
 
@@ -57,6 +57,8 @@ Key arguments:
 - `--secondary-extinction`: Beer–Lambert extinction coefficient (1/m) applied when `--secondary` is active
 - `--auto-expose`: Enable percentile-based per-frame scaling for the `intensity` column (default is stable, physically based `return_power`)
 - `--secondary-min-cos`: Minimum cosine of incidence needed to spawn a pass-through return (default 0.95)
+- `--rolling-subframes`: Number of temporal samples per frame when approximating rolling shutter (default 4)
+- `--ply-binary`: Emit binary PLY files instead of ASCII
 - `--seed`: Seed for numpy/random (continuous spin still advances phase per frame)
 
 ### Viewer
@@ -78,7 +80,7 @@ Defaults are tuned for indoor scanning:
 
 1. Distance falloff of `1 / r^2` (physical inverse-square; override as needed)
 2. Optional per-frame auto exposure: 95th percentile mapped to intensity 200
-3. Principled BSDF sampling for diffuse/specular return power and transmissive attenuation
+3. Principled BSDF sampling for diffuse/specular return power with simple image-texture lookups and transmissive attenuation
 4. Minimum range 5 cm to retain close geometry
 5. No random dropout; grazing acceptance allows all non-backfacing hits
 6. Percentile-based coloring in the viewer for stable contrast

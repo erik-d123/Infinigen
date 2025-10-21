@@ -77,6 +77,8 @@ class LidarConfig:
                  secondary_ray_bias: float = 5e-4,
                  secondary_extinction: float = 0.0,
                  secondary_min_cos: float = 0.95,
+                 rolling_subframes: int = 4,
+                 ply_binary: bool = False,
                  ):
 
         if preset not in LIDAR_PRESETS:
@@ -149,6 +151,8 @@ class LidarConfig:
         self.secondary_ray_bias = secondary_ray_bias
         self.secondary_extinction = secondary_extinction
         self.secondary_min_cos = secondary_min_cos
+        self.rolling_subframes = max(1, int(rolling_subframes))
+        self.ply_binary = ply_binary
 
     def to_dict(self):
         # Convert configuration to serializable dict
@@ -180,6 +184,8 @@ class LidarConfig:
             "secondary_ray_bias": self.secondary_ray_bias,
             "secondary_extinction": self.secondary_extinction,
             "secondary_min_cos": self.secondary_min_cos,
+            "rolling_subframes": self.rolling_subframes,
+            "ply_binary": self.ply_binary,
         }
 
     def __str__(self):

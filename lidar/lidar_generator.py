@@ -33,65 +33,134 @@ except (ImportError, ValueError):
     from lidar_raycast import generate_sensor_rays, perform_raycasting
     from lidar_io import save_ply, world_to_frame_matrix, _matrix_to_np3x3
 
+def _split_indices(col_frac: np.ndarray, subframes: int) -> list[np.ndarray]:
+    if subframes <= 1:
+        return [np.arange(col_frac.size, dtype=np.int32)]
+    order = np.argsort(col_frac)
+    chunks = np.array_split(order, subframes)
+    return [chunk.astype(np.int32) for chunk in chunks if chunk.size]
+
+
+def _accumulate_results(accum, res_slice):
+    if accum is None:
+        arrays = {k: [res_slice[k]] for k in res_slice if k != "scale_used"}
+        return {"arrays": arrays, "scale": res_slice.get("scale_used", 0.0)}
+    for key, value in res_slice.items():
+        if key == "scale_used":
+            accum["scale"] = value
+        else:
+            accum["arrays"].setdefault(key, []).append(value)
+    return accum
+
+
+def _finalize_results(accum):
+    final = {}
+    for key, arr_list in accum["arrays"].items():
+        if len(arr_list) == 1:
+            final[key] = arr_list[0]
+        else:
+            sample = arr_list[0]
+            if getattr(sample, "ndim", 1) > 1:
+                final[key] = np.vstack(arr_list)
+            else:
+                final[key] = np.concatenate(arr_list)
+    final["scale_used"] = accum["scale"]
+    return final
+
+
 def process_frame(scene, cam_obj, frame, fps, output_dir, cfg: LidarConfig, sensor_R: Matrix, precomp, phase_offset_rad,
                   *, write_ply=True):
-    # Process single frame: generate rays, cast, and save results
     bpy.context.scene.frame_set(frame)
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-
     dirs_sensor, ring_ids, az_idx, elev_rad, az_base = precomp
 
-    # Timing calculations for sensor spin
     frame_dt = 1.0 / fps
     rps = cfg.rpm / 60.0
-    omega = 2.0 * math.pi * rps  # rad/s
+    omega = 2.0 * math.pi * rps
     col_frac = az_idx.astype(np.float32) / float(cfg.num_azimuth)
 
-    if cfg.continuous_spin:
-        if cfg.rolling_shutter:
-            rev_time = 1.0 / max(rps, 1e-6)
-            t_offsets = (col_frac * rev_time).astype(np.float32)
-        else:
-            t_offsets = np.zeros_like(col_frac, dtype=np.float32)
-        az = az_base + phase_offset_rad
-    else:
-        t_offsets = np.zeros_like(col_frac, dtype=np.float32)
-        az = az_base + phase_offset_rad
+    subframes = cfg.rolling_subframes if cfg.rolling_shutter else 1
+    index_slices = _split_indices(col_frac, subframes)
 
-    # Apply azimuth rotation to sensor ray directions
-    ca, sa = np.cos(az), np.sin(az)
-    dirs_yawed = np.stack([
-        dirs_sensor[:, 0] * ca - dirs_sensor[:, 1] * sa,
-        dirs_sensor[:, 0] * sa + dirs_sensor[:, 1] * ca,
-        dirs_sensor[:, 2]
-    ], axis=1)
+    accum = None
+    total_cast = 0
+    frame_start = time.time()
+    original_frame = bpy.context.scene.frame_current
+    original_subframe = getattr(bpy.context.scene, "frame_subframe", 0.0)
 
-    # Transform sensor directions to world coordinates
-    R_cam_np = _matrix_to_np3x3(cam_obj.matrix_world.to_3x3())
     sensor_to_cam_np = _matrix_to_np3x3(sensor_R)
-    world_dirs_np = dirs_yawed @ sensor_to_cam_np.T @ R_cam_np.T
-    world_dirs = world_dirs_np / np.linalg.norm(world_dirs_np, axis=1, keepdims=True)
+    rev_time = 1.0 / max(rps, 1e-6) if cfg.continuous_spin and cfg.rolling_shutter else None
 
-    origin = cam_obj.matrix_world.translation
+    try:
+        for slice_indices in index_slices:
+            if slice_indices.size == 0:
+                continue
 
-    # Perform ray casting
-    t0 = time.time()
-    res = perform_raycasting(scene, depsgraph, origin, world_dirs, ring_ids, az, elev_rad, t_offsets, cfg)
-    dt = time.time() - t0
+            subframe = 0.0
+            if cfg.rolling_shutter and subframes > 1:
+                subframe = float(np.clip(np.mean(col_frac[slice_indices]), 0.0, 0.999999))
+                bpy.context.scene.frame_set(frame, subframe=subframe)
+            depsgraph = bpy.context.evaluated_depsgraph_get()
 
-    if not res:
-        print(f"Frame {frame}: cast {len(world_dirs)} rays, hit 0 points ({dt:.2f}s)")
+            az_slice = az_base[slice_indices] + phase_offset_rad
+            if cfg.continuous_spin and cfg.rolling_shutter:
+                t_offsets = (col_frac[slice_indices] * rev_time).astype(np.float32)
+            elif cfg.continuous_spin:
+                t_offsets = np.zeros(slice_indices.size, dtype=np.float32)
+            else:
+                t_offsets = np.zeros(slice_indices.size, dtype=np.float32)
+
+            ca = np.cos(az_slice)
+            sa = np.sin(az_slice)
+            dirs = dirs_sensor[slice_indices]
+            dirs_yawed = np.stack([
+                dirs[:, 0] * ca - dirs[:, 1] * sa,
+                dirs[:, 0] * sa + dirs[:, 1] * ca,
+                dirs[:, 2]
+            ], axis=1)
+
+            R_cam_np = _matrix_to_np3x3(cam_obj.matrix_world.to_3x3())
+            world_dirs_np = dirs_yawed @ sensor_to_cam_np.T @ R_cam_np.T
+            world_dirs = world_dirs_np / np.linalg.norm(world_dirs_np, axis=1, keepdims=True)
+            origin = cam_obj.matrix_world.translation
+
+            t0 = time.time()
+            res_slice = perform_raycasting(
+                scene,
+                depsgraph,
+                origin,
+                world_dirs,
+                ring_ids[slice_indices],
+                az_slice,
+                elev_rad[slice_indices],
+                t_offsets,
+                cfg,
+            )
+            dt = time.time() - t0
+            total_cast += slice_indices.size
+
+            if not res_slice:
+                continue
+
+            accum = _accumulate_results(accum, res_slice)
+    finally:
+        bpy.context.scene.frame_set(original_frame, subframe=original_subframe)
+
+    if accum is None:
+        elapsed = time.time() - frame_start
+        print(f"Frame {frame}: cast {total_cast} rays, hit 0 points ({elapsed:.2f}s)")
+        if cfg.continuous_spin:
+            phase_offset_rad = (phase_offset_rad + omega * frame_dt) % (2.0 * math.pi)
         return 0, phase_offset_rad, None
 
+    res = _finalize_results(accum)
     nhit = len(res["points_world"])
-    print(f"Frame {frame}: cast {len(world_dirs)} rays, hit {nhit} points ({dt:.2f}s, scale={res['scale_used']:.5f})")
+    elapsed = time.time() - frame_start
+    print(f"Frame {frame}: cast {total_cast} rays, hit {nhit} points ({elapsed:.2f}s, scale={res['scale_used']:.5f})")
 
-    # Save output files
     xform = world_to_frame_matrix(cam_obj, sensor_R, cfg.ply_frame)
     if write_ply and cfg.save_ply:
-        save_ply(output_dir, frame, xform, res)
+        save_ply(output_dir, frame, xform, res, cfg)
 
-    # Update phase for continuous spin
     if cfg.continuous_spin:
         phase_offset_rad = (phase_offset_rad + omega * frame_dt) % (2.0 * math.pi)
 
@@ -112,6 +181,8 @@ def parse_args(argv):
     p.add_argument("--secondary-ray-bias", type=float, default=5e-4, help="Offset (m) applied when spawning secondary rays past transmissive surfaces")
     p.add_argument("--secondary-extinction", type=float, default=0.0, help="Extinction coefficient (1/m) for transmissive media")
     p.add_argument("--secondary-min-cos", type=float, default=0.95, help="Minimum cosine incidence to spawn a pass-through secondary")
+    p.add_argument("--rolling-subframes", type=int, default=4, help="Number of temporal samples per frame for rolling shutter")
+    p.add_argument("--ply-binary", action="store_true", help="Save binary PLY files")
     p.add_argument("--auto-expose", action="store_true", help="Enable per-frame percentile exposure scaling for U8 intensity")
     p.add_argument("--seed", type=int, default=None, help="Random seed")
     return p.parse_args(argv)
@@ -158,6 +229,8 @@ def main():
         secondary_ray_bias=args.secondary_ray_bias,
         secondary_extinction=args.secondary_extinction,
         secondary_min_cos=args.secondary_min_cos,
+        rolling_subframes=args.rolling_subframes,
+        ply_binary=args.ply_binary,
     )
 
     # Setup output directory and save configuration

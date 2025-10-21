@@ -31,7 +31,7 @@ def world_to_frame_matrix(cam_obj, sensor_R: Matrix, frame: str) -> Matrix:
 
 # PLY file output
 
-def save_ply(output_dir, frame, xform_world_to_out: Matrix, data):
+def save_ply(output_dir, frame, xform_world_to_out: Matrix, data, cfg):
     # Save point cloud in PLY format (ASCII)
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, f"lidar_frame_{frame:04d}.ply")
@@ -49,6 +49,59 @@ def save_ply(output_dir, frame, xform_world_to_out: Matrix, data):
     if has_normals:
         rot = _matrix_to_np3x3(xform_world_to_out.to_3x3())
         normals_out = (rot @ np.asarray(data["normals_world"], dtype=np.float32).T).T
+
+    binary = getattr(cfg, "ply_binary", False)
+    if binary:
+        try:
+            from plyfile import PlyData, PlyElement
+        except ImportError:
+            binary = False
+
+    if binary:
+        dtype = [("x", "f4"), ("y", "f4"), ("z", "f4"),
+                 ("intensity", "u1"), ("ring", "u2"),
+                 ("azimuth", "f4"), ("elevation", "f4"), ("time_offset", "f4"),
+                 ("return_id", "u1"), ("num_returns", "u1")]
+        if has_range:
+            dtype.append(("range_m", "f4"))
+        if has_ci:
+            dtype.append(("cos_incidence", "f4"))
+        if has_mc:
+            dtype.append(("mat_class", "u1"))
+        if has_power:
+            dtype.append(("return_power", "f4"))
+        if "exposure_scale" in data:
+            dtype.append(("exposure_scale", "f4"))
+        if has_normals:
+            dtype.extend([("nx", "f4"), ("ny", "f4"), ("nz", "f4")])
+        vertex = np.empty(n, dtype=dtype)
+        vertex["x"] = pts_out[:, 0]
+        vertex["y"] = pts_out[:, 1]
+        vertex["z"] = pts_out[:, 2]
+        vertex["intensity"] = np.asarray(data["intensities_u8"], dtype=np.uint8)
+        vertex["ring"] = np.asarray(data["ring_ids"], dtype=np.uint16)
+        vertex["azimuth"] = np.asarray(data["azimuth_rad"], dtype=np.float32)
+        vertex["elevation"] = np.asarray(data["elevation_rad"], dtype=np.float32)
+        vertex["time_offset"] = np.asarray(data["time_offset"], dtype=np.float32)
+        vertex["return_id"] = np.asarray(data["return_id"], dtype=np.uint8)
+        vertex["num_returns"] = np.asarray(data["num_returns"], dtype=np.uint8)
+        if has_range:
+            vertex["range_m"] = np.asarray(data["range_m"], dtype=np.float32)
+        if has_ci:
+            vertex["cos_incidence"] = np.asarray(data["cos_incidence"], dtype=np.float32)
+        if has_mc:
+            vertex["mat_class"] = np.asarray(data["mat_class"], dtype=np.uint8)
+        if has_power:
+            power_data = data.get("return_power", data.get("reflectance"))
+            vertex["return_power"] = np.asarray(power_data, dtype=np.float32)
+        if "exposure_scale" in data:
+            vertex["exposure_scale"] = np.asarray(data["exposure_scale"], dtype=np.float32)
+        if has_normals:
+            vertex["nx"] = normals_out[:, 0]
+            vertex["ny"] = normals_out[:, 1]
+            vertex["nz"] = normals_out[:, 2]
+        PlyData([PlyElement.describe(vertex, "vertex")], text=False).write(path)
+        return
 
     with open(path, "w", encoding="utf-8") as f:
         f.write(f"ply\nformat ascii 1.0\ncomment Lidar frame {frame}\n")

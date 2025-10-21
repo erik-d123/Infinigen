@@ -264,6 +264,8 @@ def test_transmissive_secondary():
     primary_mean = 0.0
     secondary_mean = 0.0
     secondary_count = 0
+    ranges = []
+    return_ids = []
 
     if res:
         num_returns = res.get("num_returns")
@@ -271,6 +273,7 @@ def test_transmissive_secondary():
             max_returns = int(np.max(num_returns))
         ret_ids = res.get("return_id")
         refl = res.get("return_power")
+        ranges_arr = res.get("range_m")
         if ret_ids is not None and refl is not None and len(ret_ids) == len(refl):
             ret_ids = np.asarray(ret_ids)
             refl = np.asarray(refl)
@@ -279,6 +282,9 @@ def test_transmissive_secondary():
             if np.any(ret_ids == 2):
                 secondary_mean = float(np.mean(refl[ret_ids == 2]))
                 secondary_count = int(np.sum(ret_ids == 2))
+            return_ids = ret_ids.tolist()
+            if ranges_arr is not None:
+                ranges = np.asarray(ranges_arr).tolist()
 
     return {
         "hits": hits,
@@ -286,6 +292,8 @@ def test_transmissive_secondary():
         "secondary_count": secondary_count,
         "primary_mean": primary_mean,
         "secondary_mean": secondary_mean,
+        "ranges": ranges,
+        "return_ids": return_ids,
     }
 
 

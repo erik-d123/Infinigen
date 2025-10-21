@@ -8,6 +8,52 @@ import math
 import random
 import numpy as np
 from mathutils import Vector
+
+
+def _barycentric_coords(tri_verts, point):
+    a, b, c = tri_verts
+    v0 = b - a
+    v1 = c - a
+    v2 = point - a
+    d00 = v0.dot(v0)
+    d01 = v0.dot(v1)
+    d11 = v1.dot(v1)
+    d20 = v2.dot(v0)
+    d21 = v2.dot(v1)
+    denom = d00 * d11 - d01 * d01
+    if abs(denom) < 1e-12:
+        return None
+    v = (d11 * d20 - d01 * d21) / denom
+    w = (d00 * d21 - d01 * d20) / denom
+    u = 1.0 - v - w
+    return (u, v, w)
+
+
+def _compute_shading_normal(obj, depsgraph, poly_index, hit_world, fallback_normal):
+    try:
+        eval_obj = obj.evaluated_get(depsgraph)
+    except ReferenceError:
+        return fallback_normal
+    mesh = eval_obj.data
+    mesh.calc_normals_split()
+    mesh.calc_loop_triangles()
+    inv_world = eval_obj.matrix_world.inverted()
+    hit_local = inv_world @ hit_world
+    for tri in mesh.loop_triangles:
+        if tri.polygon_index != poly_index:
+            continue
+        verts = [mesh.vertices[i].co for i in tri.vertices]
+        bary = _barycentric_coords(verts, hit_local)
+        if bary is None:
+            continue
+        loops = tri.loops
+        normal_local = Vector((0.0, 0.0, 0.0))
+        for weight, loop_index in zip(bary, loops):
+            normal_local += weight * mesh.loops[loop_index].normal
+        normal_world = eval_obj.matrix_world.to_3x3() @ normal_local
+        if normal_world.length_squared > 1e-12:
+            return normal_world.normalized()
+    return fallback_normal
 # Support both package and script execution contexts
 try:
     from .intensity_model import extract_material_properties, compute_intensity, classify_material
@@ -112,10 +158,11 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
 
         dist = (loc - origin_world).length
         if cfg.min_range <= dist <= cfg.max_range:
-            n = Vector(nrm).normalized()
+            face_normal = Vector(nrm).normalized()
+            n = _compute_shading_normal(obj, depsgraph, poly_idx, loc, face_normal)
             cos_i = max(0.0, float(n.dot(-dv)))
             if cos_i >= cfg.grazing_dropout_cos_thresh:
-                props = extract_material_properties(obj, poly_idx, depsgraph)
+                props = extract_material_properties(obj, poly_idx, depsgraph, loc)
                 I01, residual_T = compute_intensity(props, cos_i, dist, cfg)
                 if I01 > 0.0:
                     I01 *= max(0.0, 1.0 + random.gauss(0.0, cfg.intensity_jitter_std))
@@ -151,10 +198,11 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
                     if hit2 and obj2:
                         total_dist = (loc2 - origin_world).length
                         if cfg.min_range <= total_dist <= cfg.max_range:
-                            n2 = Vector(nrm2).normalized()
+                            face_normal2 = Vector(nrm2).normalized()
+                            n2 = _compute_shading_normal(obj2, depsgraph, poly_idx2, loc2, face_normal2)
                             cos_i2 = max(0.0, float(n2.dot(-dv)))
                             if cos_i2 >= cfg.grazing_dropout_cos_thresh:
-                                props2 = extract_material_properties(obj2, poly_idx2, depsgraph)
+                                props2 = extract_material_properties(obj2, poly_idx2, depsgraph, loc2)
                                 I02, _ = compute_intensity(props2, cos_i2, total_dist, cfg)
 
                                 transmission_scale = residual_T

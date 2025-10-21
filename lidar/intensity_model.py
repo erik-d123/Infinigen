@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import bpy
+from mathutils import geometry, Vector
 
 _MATERIAL_CACHE: dict[int, dict] = {}
 _CACHE_LAST_FRAME = None
@@ -34,6 +35,110 @@ def _safe_input(node, name, default):
         return default
 
 
+def _srgb_to_linear(c: float) -> float:
+    if c <= 0.04045:
+        return c / 12.92
+    return ((c + 0.055) / 1.055) ** 2.4
+
+
+def _sample_image_pixel(image, uv):
+    if not image or image.size[0] == 0 or image.size[1] == 0:
+        return None
+    if not image.pixels:
+        try:
+            image.pixels[0]
+        except Exception:
+            return None
+    width, height = image.size
+    channels = image.channels
+    u = (uv.x % 1.0) * (width - 1)
+    v = (uv.y % 1.0) * (height - 1)
+    x = int(max(0, min(width - 1, round(u))))
+    y = int(max(0, min(height - 1, round(v))))
+    index = (y * width + x) * channels
+    try:
+        data = image.pixels[index : index + channels]
+    except Exception:
+        data = None
+    if not data:
+        return None
+    return tuple(data)
+
+
+def _barycentric_coords(tri_verts, point):
+    a, b, c = tri_verts
+    v0 = b - a
+    v1 = c - a
+    v2 = point - a
+    d00 = v0.dot(v0)
+    d01 = v0.dot(v1)
+    d11 = v1.dot(v1)
+    d20 = v2.dot(v0)
+    d21 = v2.dot(v1)
+    denom = d00 * d11 - d01 * d01
+    if abs(denom) < 1e-12:
+        return None
+    v = (d11 * d20 - d01 * d21) / denom
+    w = (d00 * d21 - d01 * d20) / denom
+    u = 1.0 - v - w
+    return (u, v, w)
+
+
+def _compute_hit_uv(eval_obj, mesh, poly_index, hit_world):
+    if not mesh.uv_layers or not mesh.uv_layers.active:
+        return None
+    uv_layer = mesh.uv_layers.active
+    inv_world = eval_obj.matrix_world.inverted()
+    hit_local = inv_world @ hit_world
+    mesh.calc_loop_triangles()
+    for tri in mesh.loop_triangles:
+        if tri.polygon_index != poly_index:
+            continue
+        verts = [mesh.vertices[i].co for i in tri.vertices]
+        bary = _barycentric_coords(verts, hit_local)
+        if bary is None:
+            continue
+        loops = tri.loops
+        uv_vals = [uv_layer.data[loop_idx].uv.copy() for loop_idx in loops]
+        uv = uv_vals[0] * bary[0] + uv_vals[1] * bary[1] + uv_vals[2] * bary[2]
+        return uv
+    return None
+
+
+def _sample_socket_texture(node, socket_name, uv):
+    if uv is None or node is None:
+        return None
+    sock = node.inputs.get(socket_name)
+    if sock is None or not sock.is_linked:
+        return None
+    link = sock.links[0]
+    from_node = link.from_node
+    while hasattr(from_node, "inputs") and isinstance(from_node, bpy.types.NodeReroute):
+        if not from_node.inputs[0].links:
+            return None
+        from_node = from_node.inputs[0].links[0].from_node
+    if isinstance(from_node, bpy.types.ShaderNodeTexImage) and from_node.image:
+        pixel = _sample_image_pixel(from_node.image, uv)
+        if pixel is None:
+            return None
+        if socket_name == "Base Color":
+            if from_node.image.colorspace_settings.name.lower().startswith("srgb"):
+                return tuple(_srgb_to_linear(float(c)) for c in pixel[:3])
+            return tuple(float(c) for c in pixel[:3])
+        return float(pixel[0])
+    return None
+
+
+def _material_has_textures(node):
+    if node is None:
+        return False
+    for name in ("Base Color", "Roughness", "Metallic", "Transmission", "Alpha"):
+        sock = node.inputs.get(name)
+        if sock and sock.is_linked:
+            return True
+    return False
+
+
 def get_material_from_hit(obj: bpy.types.Object, poly_index: int, depsgraph) -> bpy.types.Material | None:
     try:
         eval_obj = obj.evaluated_get(depsgraph)
@@ -59,15 +164,18 @@ def _luma(rgb):
 def _maybe_clear_cache():
     global _CACHE_LAST_FRAME
     try:
-        frame = bpy.context.scene.frame_current
+        scene = bpy.context.scene
+        frame = scene.frame_current
+        subframe = getattr(scene, "frame_subframe", 0.0)
+        frame_key = (frame, round(subframe, 6))
     except Exception:
-        frame = None
-    if frame != _CACHE_LAST_FRAME:
+        frame_key = None
+    if frame_key != _CACHE_LAST_FRAME:
         _MATERIAL_CACHE.clear()
-        _CACHE_LAST_FRAME = frame
+        _CACHE_LAST_FRAME = frame_key
 
 
-def extract_material_properties(obj, poly_index, depsgraph):
+def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
     _maybe_clear_cache()
     mat = get_material_from_hit(obj, poly_index, depsgraph)
 
@@ -87,13 +195,18 @@ def extract_material_properties(obj, poly_index, depsgraph):
     if mat is None:
         return defaults
 
-    key = id(mat)
-    cached = _MATERIAL_CACHE.get(key)
-    if cached is not None:
-        return cached
-
     params = dict(defaults)
+    eval_obj = obj.evaluated_get(depsgraph)
+    mesh = eval_obj.data
+    uv = _compute_hit_uv(eval_obj, mesh, poly_index, hit_world) if hit_world is not None else None
+
     node = _find_principled_bsdf(mat)
+    has_textures = _material_has_textures(node)
+    key = id(mat)
+    if not has_textures:
+        cached = _MATERIAL_CACHE.get(key)
+        if cached is not None:
+            return dict(cached)
     if node:
         params["base_color"] = _safe_input(node, "Base Color", params["base_color"])
         params["metallic"] = float(_safe_input(node, "Metallic", params["metallic"]))
@@ -118,6 +231,23 @@ def extract_material_properties(obj, poly_index, depsgraph):
             params["is_glass_hint"] = True
     except Exception:
         pass
+
+    if uv is not None and node is not None:
+        color_sample = _sample_socket_texture(node, "Base Color", uv)
+        if color_sample is not None:
+            params["base_color"] = tuple(max(0.0, min(1.0, float(c))) for c in color_sample[:3])
+        rough_sample = _sample_socket_texture(node, "Roughness", uv)
+        if rough_sample is not None:
+            params["roughness"] = float(max(0.0, min(1.0, rough_sample)))
+        metal_sample = _sample_socket_texture(node, "Metallic", uv)
+        if metal_sample is not None:
+            params["metallic"] = float(max(0.0, min(1.0, metal_sample)))
+        trans_sample = _sample_socket_texture(node, "Transmission", uv)
+        if trans_sample is not None:
+            params["transmission"] = float(max(0.0, min(1.0, trans_sample)))
+        alpha_sample = _sample_socket_texture(node, "Alpha", uv)
+        if alpha_sample is not None:
+            params["opacity"] = float(max(0.0, min(1.0, alpha_sample)))
 
     rough = max(0.0, min(1.0, float(params["roughness"])))
     params["roughness"] = rough
@@ -146,7 +276,8 @@ def extract_material_properties(obj, poly_index, depsgraph):
     nir = max(0.05, min(0.9, nir))
     params["nir_reflectance"] = (nir ** 0.8) * (1.0 - min(1.0, metal))
 
-    _MATERIAL_CACHE[key] = params
+    if not has_textures:
+        _MATERIAL_CACHE[key] = dict(params)
     return params
 
 

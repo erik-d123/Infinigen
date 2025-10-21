@@ -116,3 +116,7 @@ def test_transmissive_secondary_returns():
     assert res["max_returns"] >= 2
     assert res["secondary_count"] > 0
     assert res["secondary_mean"] < res["primary_mean"]
+    ranges = np.asarray(res.get("ranges", []), dtype=float)
+    ids = np.asarray(res.get("return_ids", []), dtype=float)
+    if ranges.size and ids.size:
+        assert ranges.shape[0] == ids.shape[0]
