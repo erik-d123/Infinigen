@@ -31,80 +31,92 @@ def world_to_frame_matrix(cam_obj, sensor_R: Matrix, frame: str) -> Matrix:
 
 # PLY file output
 
-def save_ply(output_dir, frame, xform_world_to_out: Matrix, data, cfg):
-    # Save point cloud in PLY format (ASCII)
+def save_ply(output_dir, frame, xform_world_to_out: Matrix, data, cfg, *, binary: bool = None):
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, f"lidar_frame_{frame:04d}.ply")
 
-    # Transform points to output coordinate frame
     pts_out = np.array([(xform_world_to_out @ Vector(p))[:] for p in data["points_world"]], dtype=np.float32)
     n = len(pts_out)
-    
-    # Check for optional fields
+
     has_ci = "cos_incidence" in data
     has_mc = "mat_class" in data
     has_power = "return_power" in data
     has_range = "range_m" in data
+    trans_data = None
+    if "transmittance" in data:
+        trans_data = np.asarray(data["transmittance"], dtype=np.float32)
+    elif "exposure_scale" in data:
+        trans_data = np.asarray(data["exposure_scale"], dtype=np.float32)
+    has_trans = trans_data is not None
     has_normals = "normals_world" in data and n == len(data["normals_world"])
     if has_normals:
         rot = _matrix_to_np3x3(xform_world_to_out.to_3x3())
         normals_out = (rot @ np.asarray(data["normals_world"], dtype=np.float32).T).T
 
-    binary = getattr(cfg, "ply_binary", False)
-    if binary:
-        try:
-            from plyfile import PlyData, PlyElement
-        except ImportError:
-            binary = False
+    if binary is None:
+        binary = getattr(cfg, "binary_ply", False)
 
     if binary:
-        dtype = [("x", "f4"), ("y", "f4"), ("z", "f4"),
-                 ("intensity", "u1"), ("ring", "u2"),
-                 ("azimuth", "f4"), ("elevation", "f4"), ("time_offset", "f4"),
-                 ("return_id", "u1"), ("num_returns", "u1")]
+        import struct
+        header_lines = [
+            "ply",
+            "format binary_little_endian 1.0",
+            f"comment Lidar frame {frame}",
+            f"element vertex {n}",
+            "property float x",
+            "property float y",
+            "property float z",
+            "property uchar intensity",
+            "property ushort ring",
+            "property float azimuth",
+            "property float elevation",
+            "property float time_offset",
+            "property uchar return_id",
+            "property uchar num_returns",
+        ]
         if has_range:
-            dtype.append(("range_m", "f4"))
+            header_lines.append("property float range_m")
         if has_ci:
-            dtype.append(("cos_incidence", "f4"))
+            header_lines.append("property float cos_incidence")
         if has_mc:
-            dtype.append(("mat_class", "u1"))
+            header_lines.append("property uchar mat_class")
         if has_power:
-            dtype.append(("return_power", "f4"))
-        if "exposure_scale" in data:
-            dtype.append(("exposure_scale", "f4"))
+            header_lines.append("property float return_power")
+        if has_trans:
+            header_lines.append("property float transmittance")
         if has_normals:
-            dtype.extend([("nx", "f4"), ("ny", "f4"), ("nz", "f4")])
-        vertex = np.empty(n, dtype=dtype)
-        vertex["x"] = pts_out[:, 0]
-        vertex["y"] = pts_out[:, 1]
-        vertex["z"] = pts_out[:, 2]
-        vertex["intensity"] = np.asarray(data["intensities_u8"], dtype=np.uint8)
-        vertex["ring"] = np.asarray(data["ring_ids"], dtype=np.uint16)
-        vertex["azimuth"] = np.asarray(data["azimuth_rad"], dtype=np.float32)
-        vertex["elevation"] = np.asarray(data["elevation_rad"], dtype=np.float32)
-        vertex["time_offset"] = np.asarray(data["time_offset"], dtype=np.float32)
-        vertex["return_id"] = np.asarray(data["return_id"], dtype=np.uint8)
-        vertex["num_returns"] = np.asarray(data["num_returns"], dtype=np.uint8)
-        if has_range:
-            vertex["range_m"] = np.asarray(data["range_m"], dtype=np.float32)
-        if has_ci:
-            vertex["cos_incidence"] = np.asarray(data["cos_incidence"], dtype=np.float32)
-        if has_mc:
-            vertex["mat_class"] = np.asarray(data["mat_class"], dtype=np.uint8)
-        if has_power:
-            power_data = data.get("return_power", data.get("reflectance"))
-            vertex["return_power"] = np.asarray(power_data, dtype=np.float32)
-        if "exposure_scale" in data:
-            vertex["exposure_scale"] = np.asarray(data["exposure_scale"], dtype=np.float32)
-        if has_normals:
-            vertex["nx"] = normals_out[:, 0]
-            vertex["ny"] = normals_out[:, 1]
-            vertex["nz"] = normals_out[:, 2]
-        PlyData([PlyElement.describe(vertex, "vertex")], text=False).write(path)
+            header_lines.extend(["property float nx", "property float ny", "property float nz"])
+        header_lines.append("end_header\n")
+
+        with open(path, "wb") as f:
+            for line in header_lines:
+                f.write((line + "\n").encode("ascii"))
+            for i in range(n):
+                f.write(struct.pack("<fff", float(pts_out[i, 0]), float(pts_out[i, 1]), float(pts_out[i, 2])))
+                f.write(struct.pack("<B", int(data["intensities_u8"][i])))
+                f.write(struct.pack("<H", int(data["ring_ids"][i])))
+                f.write(struct.pack("<fff", float(data["azimuth_rad"][i]), float(data["elevation_rad"][i]), float(data["time_offset"][i])))
+                f.write(struct.pack("<B", int(data["return_id"][i])))
+                f.write(struct.pack("<B", int(data["num_returns"][i])))
+                if has_range:
+                    f.write(struct.pack("<f", float(data["range_m"][i])))
+                if has_ci:
+                    f.write(struct.pack("<f", float(data["cos_incidence"][i])))
+                if has_mc:
+                    f.write(struct.pack("<B", int(data["mat_class"][i])))
+                if has_power:
+                    f.write(struct.pack("<f", float(data["return_power"][i])))
+                if has_trans:
+                    f.write(struct.pack("<f", float(trans_data[i])))
+                if has_normals:
+                    nx, ny, nz = normals_out[i]
+                    f.write(struct.pack("<fff", float(nx), float(ny), float(nz)))
         return
 
     with open(path, "w", encoding="utf-8") as f:
-        f.write(f"ply\nformat ascii 1.0\ncomment Lidar frame {frame}\n")
+        f.write("ply\n")
+        f.write("format ascii 1.0\n")
+        f.write(f"comment Lidar frame {frame}\n")
         f.write(f"element vertex {n}\n")
         f.write("property float x\nproperty float y\nproperty float z\n")
         f.write("property uchar intensity\nproperty ushort ring\n")
@@ -118,34 +130,29 @@ def save_ply(output_dir, frame, xform_world_to_out: Matrix, data, cfg):
             f.write("property uchar mat_class\n")
         if has_power:
             f.write("property float return_power\n")
-        if "exposure_scale" in data:
-            f.write("property float exposure_scale\n")
+        if has_trans:
+            f.write("property float transmittance\n")
         if has_normals:
             f.write("property float nx\nproperty float ny\nproperty float nz\n")
         f.write("end_header\n")
 
-        az, el, t = data["azimuth_rad"], data["elevation_rad"], data["time_offset"]
-        ret, nret = data["return_id"], data["num_returns"]
-        ci = data.get("cos_incidence", None)
-        mc = data.get("mat_class", None)
-        power = data.get("return_power", None)
-        rng = data.get("range_m", None)
-        exposure = data.get("exposure_scale", None)
-
         for i in range(n):
-            x, y, z = pts_out[i]
-            line = (f"{x:.6f} {y:.6f} {z:.6f} {int(data['intensities_u8'][i])} {int(data['ring_ids'][i])} "
-                    f"{az[i]:.6f} {el[i]:.6f} {t[i]:.6e} {int(ret[i])} {int(nret[i])}")
+            line = (
+                f"{pts_out[i,0]:.6f} {pts_out[i,1]:.6f} {pts_out[i,2]:.6f} "
+                f"{int(data['intensities_u8'][i])} {int(data['ring_ids'][i])} "
+                f"{data['azimuth_rad'][i]:.6f} {data['elevation_rad'][i]:.6f} {data['time_offset'][i]:.6f} "
+                f"{int(data['return_id'][i])} {int(data['num_returns'][i])}"
+            )
             if has_range:
-                line += f" {rng[i]:.6f}"
+                line += f" {data['range_m'][i]:.6f}"
             if has_ci:
-                line += f" {ci[i]:.6f}"
+                line += f" {data['cos_incidence'][i]:.6f}"
             if has_mc:
-                line += f" {int(mc[i])}"
+                line += f" {int(data['mat_class'][i])}"
             if has_power:
-                line += f" {power[i]:.6f}"
-            if exposure is not None:
-                line += f" {exposure[i]:.6f}"
+                line += f" {data['return_power'][i]:.6f}"
+            if has_trans:
+                line += f" {trans_data[i]:.6f}"
             if has_normals:
                 nx, ny, nz = normals_out[i]
                 line += f" {nx:.6f} {ny:.6f} {nz:.6f}"

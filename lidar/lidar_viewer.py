@@ -168,7 +168,8 @@ class LidarViewer:
                     'return_power': 'return_power',
                     'reflectance': 'return_power',  # backward compatibility
                     'range_m': 'range_m',
-                    'exposure_scale': 'exposure_scale',
+                    'transmittance': 'transmittance',
+                    'exposure_scale': 'transmittance',
                 }
                 for ply_name, out_name in name_map.items():
                     if ply_name in vtx.data.dtype.names:

@@ -93,7 +93,7 @@ Defaults are tuned for indoor scanning:
 - `trajectory.json`: Camera translations indexed by frame
 - `timestamps.txt`: Seconds from the first frame (derived from scene FPS)
 - `poses_tum.txt`: TUM-format poses `timestamp tx ty tz qx qy qz qw`
-> The `intensity` column in the PLY is per-frame scaled for visualization. Use the `return_power` float column (and `range_m`) for training or quantitative analysis. The `exposure_scale` column records any per-return exposure adjustment when auto exposure is enabled.
+> The `intensity` column in the PLY is per-frame scaled for visualization. Use the `return_power` float column (and `range_m`) for training or quantitative analysis. The `transmittance` column records per-return energy after glass attenuation (auto exposure only adjusts the 8-bit `intensity`).
 
 ### PLY Structure
 
@@ -116,7 +116,7 @@ property float range_m
 property float cos_incidence    # when plyfile installed
 property uchar mat_class        # when plyfile installed
 property float return_power     # when plyfile installed
-property float exposure_scale   # when auto exposure enabled
+property float transmittance    # when pass-through enabled (or legacy exposure scale)
 end_header
 ...
 ```

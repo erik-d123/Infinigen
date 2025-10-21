@@ -120,3 +120,6 @@ def test_transmissive_secondary_returns():
     ids = np.asarray(res.get("return_ids", []), dtype=float)
     if ranges.size and ids.size:
         assert ranges.shape[0] == ids.shape[0]
+    if res.get("transmittance") is not None:
+        trans = np.asarray(res["transmittance"], dtype=float)
+        assert np.all(trans >= 0.0)
