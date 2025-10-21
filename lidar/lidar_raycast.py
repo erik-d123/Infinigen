@@ -157,11 +157,13 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
                                 props2 = extract_material_properties(obj2, poly_idx2, depsgraph)
                                 I02, _ = compute_intensity(props2, cos_i2, total_dist, cfg)
 
-                                    transmission_scale = residual_T
-                                    if cfg.secondary_extinction > 0.0:
-                                        transmission_scale *= _beer_lambert_transmittance(
-                                            obj, depsgraph, loc, dv, cfg.secondary_ray_bias, cfg.secondary_extinction
-                                        )
+                                transmission_scale = residual_T
+                                if cfg.secondary_extinction > 0.0:
+                                    transmission_scale *= _beer_lambert_transmittance(
+                                        obj, depsgraph, loc, dv, cfg.secondary_ray_bias, cfg.secondary_extinction
+                                    )
+                                F_exit = transmissive_reflectance(cos_i2, props2.get("ior", 1.45))
+                                transmission_scale *= max(0.0, 1.0 - F_exit)
 
                                 I02 *= transmission_scale
                                 if I02 > 0.0:
