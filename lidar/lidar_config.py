@@ -71,13 +71,13 @@ class LidarConfig:
                  rpm: float = None,
                  continuous_spin: bool = True,
                  rolling_shutter: bool = True,
+                 subframes: int = 1,
                  ply_frame: str = "sensor",  # {camera,sensor,world}
                  enable_secondary: bool = False,
                  secondary_min_residual: float = 0.05,
                  secondary_ray_bias: float = 5e-4,
                  secondary_extinction: float = 0.0,
                  secondary_min_cos: float = 0.95,
-                 rolling_subframes: int = 4,
                  ply_binary: bool = False,
                  ):
 
@@ -133,6 +133,7 @@ class LidarConfig:
         self.rpm = rpm or preset_data["default_rpm"]
         self.continuous_spin = continuous_spin
         self.rolling_shutter = rolling_shutter
+        self.subframes = max(1, int(subframes))
 
         # Output options (kept minimal)
         self.save_ply = save_ply
@@ -151,7 +152,8 @@ class LidarConfig:
         self.secondary_ray_bias = secondary_ray_bias
         self.secondary_extinction = secondary_extinction
         self.secondary_min_cos = secondary_min_cos
-        self.rolling_subframes = max(1, int(rolling_subframes))
+        # Backward compatibility alias
+        self.rolling_subframes = self.subframes
         self.ply_binary = ply_binary
 
     def to_dict(self):
@@ -172,6 +174,7 @@ class LidarConfig:
             "rpm": self.rpm,
             "continuous_spin": self.continuous_spin,
             "rolling_shutter": self.rolling_shutter,
+            "subframes": self.subframes,
             "save_ply": self.save_ply,
             "ply_frame": self.ply_frame,
             "range_noise_a": self.range_noise_a,
@@ -184,7 +187,7 @@ class LidarConfig:
             "secondary_ray_bias": self.secondary_ray_bias,
             "secondary_extinction": self.secondary_extinction,
             "secondary_min_cos": self.secondary_min_cos,
-            "rolling_subframes": self.rolling_subframes,
+            "rolling_subframes": self.subframes,
             "ply_binary": self.ply_binary,
         }
 

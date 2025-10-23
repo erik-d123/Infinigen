@@ -10,6 +10,23 @@ import numpy as np
 from mathutils import Vector
 
 
+# Support both package and script execution contexts
+try:
+    from .intensity_model import (
+        extract_material_properties,
+        compute_intensity,
+        classify_material,
+        transmissive_reflectance,
+    )
+except Exception:
+    from intensity_model import (
+        extract_material_properties,
+        compute_intensity,
+        classify_material,
+        transmissive_reflectance,
+    )
+
+
 def _barycentric_coords(tri_verts, point):
     a, b, c = tri_verts
     v0 = b - a
@@ -54,12 +71,6 @@ def _compute_shading_normal(obj, depsgraph, poly_index, hit_world, fallback_norm
         if normal_world.length_squared > 1e-12:
             return normal_world.normalized()
     return fallback_normal
-# Support both package and script execution contexts
-try:
-    from .intensity_model import extract_material_properties, compute_intensity, classify_material
-except Exception:
-    from intensity_model import extract_material_properties, compute_intensity, classify_material
-
 def _beer_lambert_transmittance(obj, depsgraph, entry_loc, direction_world, bias, extinction_coeff):
     if extinction_coeff <= 0.0:
         return 1.0
@@ -210,7 +221,7 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
                                     transmission_scale *= _beer_lambert_transmittance(
                                         obj, depsgraph, loc, dv, cfg.secondary_ray_bias, cfg.secondary_extinction
                                     )
-                                F_exit = transmissive_reflectance(cos_i2, props2.get("ior", 1.45))
+                                F_exit = transmissive_reflectance(cos_i, props.get("ior", 1.45))
                                 transmission_scale *= max(0.0, 1.0 - F_exit)
 
                                 I02 *= transmission_scale

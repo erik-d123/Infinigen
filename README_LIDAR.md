@@ -57,7 +57,7 @@ Key arguments:
 - `--secondary-extinction`: Beer–Lambert extinction coefficient (1/m) applied when `--secondary` is active
 - `--auto-expose`: Enable percentile-based per-frame scaling for the `intensity` column (default is stable, physically based `return_power`)
 - `--secondary-min-cos`: Minimum cosine of incidence needed to spawn a pass-through return (default 0.95)
-- `--rolling-subframes`: Number of temporal samples per frame when approximating rolling shutter (default 4)
+- `--subframes`: Number of temporal pose samples per frame when approximating rolling shutter (default 1)
 - `--ply-binary`: Emit binary PLY files instead of ASCII
 - `--seed`: Seed for numpy/random (continuous spin still advances phase per frame)
 

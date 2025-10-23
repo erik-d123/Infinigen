@@ -78,7 +78,8 @@ def process_frame(scene, cam_obj, frame, fps, output_dir, cfg: LidarConfig, sens
     omega = 2.0 * math.pi * rps
     col_frac = az_idx.astype(np.float32) / float(cfg.num_azimuth)
 
-    subframes = cfg.rolling_subframes if cfg.rolling_shutter else 1
+    cfg_subframes = getattr(cfg, "subframes", getattr(cfg, "rolling_subframes", 1))
+    subframes = cfg_subframes if cfg.rolling_shutter else 1
     index_slices = _split_indices(col_frac, subframes)
 
     accum = None
@@ -159,7 +160,7 @@ def process_frame(scene, cam_obj, frame, fps, output_dir, cfg: LidarConfig, sens
 
     xform = world_to_frame_matrix(cam_obj, sensor_R, cfg.ply_frame)
     if write_ply and cfg.save_ply:
-        save_ply(output_dir, frame, xform, res, cfg)
+        save_ply(output_dir, frame, xform, res, cfg, binary=cfg.ply_binary)
 
     if cfg.continuous_spin:
         phase_offset_rad = (phase_offset_rad + omega * frame_dt) % (2.0 * math.pi)
@@ -181,7 +182,8 @@ def parse_args(argv):
     p.add_argument("--secondary-ray-bias", type=float, default=5e-4, help="Offset (m) applied when spawning secondary rays past transmissive surfaces")
     p.add_argument("--secondary-extinction", type=float, default=0.0, help="Extinction coefficient (1/m) for transmissive media")
     p.add_argument("--secondary-min-cos", type=float, default=0.95, help="Minimum cosine incidence to spawn a pass-through secondary")
-    p.add_argument("--rolling-subframes", type=int, default=4, help="Number of temporal samples per frame for rolling shutter")
+    p.add_argument("--subframes", type=int, default=1, help="Pose resamples per frame for rolling shutter (>=1)")
+    p.add_argument("--rolling-subframes", type=int, dest="subframes", help=argparse.SUPPRESS)
     p.add_argument("--ply-binary", action="store_true", help="Save binary PLY files")
     p.add_argument("--auto-expose", action="store_true", help="Enable per-frame percentile exposure scaling for U8 intensity")
     p.add_argument("--seed", type=int, default=None, help="Random seed")
@@ -229,7 +231,7 @@ def main():
         secondary_ray_bias=args.secondary_ray_bias,
         secondary_extinction=args.secondary_extinction,
         secondary_min_cos=args.secondary_min_cos,
-        rolling_subframes=args.rolling_subframes,
+        subframes=args.subframes,
         ply_binary=args.ply_binary,
     )
 
