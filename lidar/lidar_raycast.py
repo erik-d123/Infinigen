@@ -9,6 +9,39 @@ import random
 import numpy as np
 from mathutils import Vector
 
+# Per-object evaluated geometry cache, cleared at each perform_raycasting call
+_OBJ_CACHE = {}
+
+def _prepare_eval(obj, depsgraph):
+    """Return cached evaluated object, mesh, and transforms."""
+    key = id(obj)
+    entry = _OBJ_CACHE.get(key)
+    if entry is not None:
+        return entry
+    try:
+        eval_obj = obj.evaluated_get(depsgraph)
+    except ReferenceError:
+        return {"eval_obj": obj, "mesh": getattr(obj, "data", None), "world": getattr(obj, "matrix_world", None), "inv_world": None}
+    mesh = eval_obj.data
+    try:
+        mesh.calc_normals_split()
+    except Exception:
+        pass
+    try:
+        mesh.calc_loop_triangles()
+    except Exception:
+        pass
+    entry = {
+        "eval_obj": eval_obj,
+        "mesh": mesh,
+        "world": eval_obj.matrix_world,
+        "inv_world": eval_obj.matrix_world.inverted(),
+        "world3x3": eval_obj.matrix_world.to_3x3(),
+    }
+    _OBJ_CACHE[key] = entry
+    return entry
+
+
 
 # Support both package and script execution contexts
 try:
@@ -47,10 +80,39 @@ def _barycentric_coords(tri_verts, point):
 
 
 def _compute_shading_normal(obj, depsgraph, poly_index, hit_world, fallback_normal):
-    try:
-        eval_obj = obj.evaluated_get(depsgraph)
-    except ReferenceError:
+    entry = _prepare_eval(obj, depsgraph)
+    eval_obj = entry.get("eval_obj")
+    mesh = entry.get("mesh")
+    inv_world = entry.get("inv_world")
+    if mesh is None or inv_world is None:
         return fallback_normal
+    hit_local = inv_world @ hit_world
+    for tri in mesh.loop_triangles:
+        if tri.polygon_index != poly_index:
+            continue
+        verts = [mesh.vertices[i].co for i in tri.vertices]
+        bary = _barycentric_coords(verts, hit_local)
+        if bary is None:
+            continue
+        loops = tri.loops
+        if not hasattr(mesh, "loops"):
+            return fallback_normal
+        if tri.polygon_index >= len(mesh.polygons):
+            return fallback_normal
+        poly = mesh.polygons[tri.polygon_index]
+        if not hasattr(mesh, "loops"):
+            return fallback_normal
+        nrm_local = poly.normal.copy()
+        for i, w in zip(loops, bary):
+            try:
+                nrm_local = nrm_local + mesh.loops[i].normal * w
+            except Exception:
+                pass
+        nrm_local.normalize()
+        nrm_world = eval_obj.matrix_world.to_3x3() @ nrm_local
+        if nrm_world.length_squared > 1e-12:
+            return nrm_world.normalized()
+    return fallback_normal
     mesh = eval_obj.data
     mesh.calc_normals_split()
     mesh.calc_loop_triangles()
@@ -71,29 +133,32 @@ def _compute_shading_normal(obj, depsgraph, poly_index, hit_world, fallback_norm
         if normal_world.length_squared > 1e-12:
             return normal_world.normalized()
     return fallback_normal
+
 def _beer_lambert_transmittance(obj, depsgraph, entry_loc, direction_world, bias, extinction_coeff):
     if extinction_coeff <= 0.0:
         return 1.0
-    try:
-        eval_obj = obj.evaluated_get(depsgraph)
-    except ReferenceError:
+    entry = _prepare_eval(obj, depsgraph)
+    mesh = entry.get("mesh")
+    world = entry.get("world")
+    inv_world = entry.get("inv_world")
+    if mesh is None or world is None or inv_world is None:
         return 1.0
-    mat_inv = eval_obj.matrix_world.inverted()
     origin_world = entry_loc + direction_world * max(bias, 1e-4)
-    origin_local = mat_inv @ origin_world
-    dir_local = mat_inv.to_3x3() @ direction_world
+    origin_local = inv_world @ origin_world
+    dir_local = inv_world.to_3x3() @ direction_world
     if dir_local.length_squared == 0.0:
         return 1.0
     dir_local.normalize()
     try:
-        hit, location_local, *_ = eval_obj.ray_cast(origin_local, dir_local)
+        hit, location_local, *_ = entry["eval_obj"].ray_cast(origin_local, dir_local)
     except AttributeError:
         return 1.0
     if not hit:
         return 1.0
-    exit_world = eval_obj.matrix_world @ location_local
+    exit_world = world @ location_local
     thickness = max(0.0, (exit_world - entry_loc).length)
     return math.exp(-extinction_coeff * thickness)
+
 
 
 def generate_sensor_rays(config):
@@ -123,6 +188,7 @@ def generate_sensor_rays(config):
     )
 
 def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_rad, el_rad, t_offsets, cfg):
+    _OBJ_CACHE.clear()
     # Cast rays and compute LiDAR returns with material-aware intensities
     
     # Output collections
@@ -218,7 +284,7 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
                                 I02, _ = compute_intensity(props2, cos_i2, total_dist, cfg)
 
                                 transmission_scale = residual_T
-                                if cfg.secondary_extinction > 0.0:
+                                if cfg.secondary_extinction > 0.0 and transmission_scale > cfg.secondary_min_residual:
                                     transmission_scale *= _beer_lambert_transmittance(
                                         obj, depsgraph, loc, dv, cfg.secondary_ray_bias, cfg.secondary_extinction
                                     )

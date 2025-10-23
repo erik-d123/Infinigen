@@ -4,6 +4,11 @@ This tool generates LiDAR ground truth for Infinigen indoor scenes with indoor-f
 
 ## Features
 
+- Metallic handling: F0 from base color, ignores Principled 'Specular' when metallic.
+- Retroreflection clamp for smooth mirrors to avoid grazing blow-up.
+- Transmission roughness damps both primary specular and pass-through residual.
+- Alpha treated as transmission only for glass-like materials; capped for decals/paints.
+
 - Indoor-oriented sensor presets: `VLP-16`, `HDL-32E`, `HDL-64E`, `OS1-128`
 - Material-aware intensity model (diffuse + specular) with optional percentile auto exposure
 - Rolling-shutter and continuous-spin timing with configurable temporal sub-sampling

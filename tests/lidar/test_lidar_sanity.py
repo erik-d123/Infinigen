@@ -123,3 +123,76 @@ def test_transmissive_secondary_returns():
     if res.get("transmittance") is not None:
         trans = np.asarray(res["transmittance"], dtype=float)
         assert np.all(trans >= 0.0)
+
+
+def test_metallic_specular_independence():
+    """Metallic intensity should ignore Principled 'Specular' slider."""
+    import bpy
+    from lidar.lidar_config import LidarConfig
+    from lidar.intensity_model import compute_intensity, extract_material_properties
+    from scripts import debug_lidar_checks as lidar_debug
+
+    lidar_debug.reset_scene()
+    plane = lidar_debug.make_plane("MetalPlane")
+    # Material A: metallic=1.0, specular=0.0
+    mat_a = lidar_debug.make_principled_material("MetalA", base_color=(0.8,0.8,0.8,1.0), metallic=1.0, specular=0.0, roughness=0.05)
+    # Material B: metallic=1.0, specular=1.0
+    mat_b = lidar_debug.make_principled_material("MetalB", base_color=(0.8,0.8,0.8,1.0), metallic=1.0, specular=1.0, roughness=0.05)
+
+    cfg = LidarConfig()
+    cfg.auto_expose = False
+    cfg.global_scale = 1.0
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+
+    # Assign and sample
+    plane.data.materials.clear()
+    plane.data.materials.append(mat_a)
+    props_a = extract_material_properties(plane, 0, depsgraph)
+    I_a, _ = compute_intensity(props_a, cos_i=1.0, R=5.0, cfg=cfg)
+
+    plane.data.materials[0] = mat_b
+    props_b = extract_material_properties(plane, 0, depsgraph)
+    I_b, _ = compute_intensity(props_b, cos_i=1.0, R=5.0, cfg=cfg)
+
+    assert abs(I_a - I_b) < 1e-4
+
+
+def test_frosted_transmission_roughness_damps_returns():
+    """Frosted glass reduces primary specular and secondary residual."""
+    import bpy
+    from lidar.lidar_config import LidarConfig
+    from lidar.intensity_model import compute_intensity, extract_material_properties
+    from scripts import debug_lidar_checks as lidar_debug
+
+    lidar_debug.reset_scene()
+    plane = lidar_debug.make_plane("GlassPlane")
+    # Clear glass
+    glass_clear = lidar_debug.make_principled_material("GlassClear", base_color=(1,1,1,1), metallic=0.0, roughness=0.0, transmission=0.98)
+    # Frosted glass with transmission roughness
+    glass_frost = lidar_debug.make_principled_material("GlassFrost", base_color=(1,1,1,1), metallic=0.0, roughness=0.0, transmission=0.98)
+    try:
+        bsdf = glass_frost.node_tree.nodes["Principled BSDF"]
+        if bsdf.inputs.get("Transmission Roughness") is not None:
+            bsdf.inputs["Transmission Roughness"].default_value = 0.8
+        else:
+            glass_frost["transmission_roughness"] = 0.8
+    except Exception:
+        glass_frost["transmission_roughness"] = 0.8
+
+    cfg = LidarConfig()
+    cfg.auto_expose = False
+    cfg.global_scale = 1.0
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+
+    plane.data.materials.clear()
+    plane.data.materials.append(glass_clear)
+    props_c = extract_material_properties(plane, 0, depsgraph)
+    I_c, residual_c = compute_intensity(props_c, cos_i=0.95, R=3.0, cfg=cfg)
+
+    plane.data.materials[0] = glass_frost
+    props_f = extract_material_properties(plane, 0, depsgraph)
+    I_f, residual_f = compute_intensity(props_f, cos_i=0.95, R=3.0, cfg=cfg)
+
+    assert I_f < I_c
+    assert residual_f < residual_c
+

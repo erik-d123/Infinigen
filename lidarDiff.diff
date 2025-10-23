@@ -1,0 +1,175 @@
+diff --git a/lidar_essential.diff b/lidar_essential.diff
+deleted file mode 100644
+index beab255a4..000000000
+--- a/lidar_essential.diff
++++ /dev/null
+@@ -1,169 +0,0 @@
+---- lidar/intensity_model.py
+-+++ lidar/intensity_model.py
+-@@ -9,6 +9,49 @@
+- 
+- _MATERIAL_CACHE: dict[int, dict] = {}
+- _CACHE_LAST_FRAME = None
+-+
+-+def _scan_node_tree_transmission(mat: bpy.types.Material):
+-+    """Heuristic: detect Transparent/Glass/Refraction nodes and Mix Shader factors.
+-+    Returns (transmission_hint, ior_hint, is_glass_hint).
+-+    """
+-+    try:
+-+        if not mat or not mat.use_nodes or not mat.node_tree:
+-+            return 0.0, None, False
+-+        trans_hint = 0.0
+-+        ior_hint = None
+-+        glass_like = False
+-+        for n in mat.node_tree.nodes:
+-+            t = getattr(n, "type", "")
+-+            if t == "BSDF_TRANSPARENT":
+-+                trans_hint = max(trans_hint, float(getattr(n.inputs.get("Color"), "default_value", (1,1,1,1))[0] > 0) or 0.9)
+-+            elif t == "BSDF_GLASS":
+-+                glass_like = True
+-+                if "IOR" in n.inputs and not n.inputs["IOR"].is_linked:
+-+                    try:
+-+                        ior_hint = float(n.inputs["IOR"].default_value)
+-+                    except Exception:
+-+                        pass
+-+                trans_hint = max(trans_hint, 0.7)
+-+            elif t == "BSDF_REFRACTION":
+-+                glass_like = True
+-+                if "IOR" in n.inputs and not n.inputs["IOR"].is_linked:
+-+                    try:
+-+                        ior_hint = float(n.inputs["IOR"].default_value)
+-+                    except Exception:
+-+                        pass
+-+                trans_hint = max(trans_hint, 0.6)
+-+            elif t == "MIX_SHADER":
+-+                try:
+-+                    fac = n.inputs["Fac"].default_value
+-+                    if 0.0 <= fac <= 1.0:
+-+                        trans_hint = max(trans_hint, float(fac))
+-+                except Exception:
+-+                    pass
+-+        return float(max(0.0, min(1.0, trans_hint))), ior_hint, bool(glass_like)
+-+    except Exception:
+-+        return 0.0, None, False
+-+
+-+
+- 
+- 
+- def _find_principled_bsdf(mat: bpy.types.Material):
+-@@ -189,6 +232,8 @@
+-         "opacity": 1.0,
+-         "F0_lum": 0.04,
+-         "nir_reflectance": 0.6,
+-+        "clearcoat": 0.0,
+-+        "clearcoat_roughness": 0.03,
+-         "is_glass_hint": False,
+-     }
+- 
+-@@ -212,6 +257,11 @@
+-         params["metallic"] = float(_safe_input(node, "Metallic", params["metallic"]))
+-         params["specular"] = float(_safe_input(node, "Specular", params["specular"]))
+-         params["roughness"] = float(_safe_input(node, "Roughness", params["roughness"]))
+-+        params["clearcoat"] = float(_safe_input(node, "Clearcoat", params["clearcoat"]))
+-+        try:
+-+            params["clearcoat_roughness"] = float(_safe_input(node, "Clearcoat Roughness", params["clearcoat_roughness"]))
+-+        except Exception:
+-+            params["clearcoat_roughness"] = params["clearcoat_roughness"]
+-         params["transmission"] = float(_safe_input(node, "Transmission", params["transmission"]))
+-         try:
+-             params["ior"] = float(_safe_input(node, "IOR", params["ior"]))
+-@@ -278,6 +328,17 @@
+- 
+-     if not has_textures:
+-         _MATERIAL_CACHE[key] = dict(params)
+-+    
+-+    # If Principled has little/no transmission, or no Principled at all, scan node tree for glass/transparent hints
+-+    if (params.get("transmission", 0.0) < 0.01) or node is None:
+-+        t_hint, ior_hint, glass_like = _scan_node_tree_transmission(mat)
+-+        if t_hint > params.get("transmission", 0.0):
+-+            params["transmission"] = t_hint
+-+        if ior_hint and (params.get("ior", 0.0) <= 1.0):
+-+            params["ior"] = float(ior_hint)
+-+        if glass_like:
+-+            params["is_glass_hint"] = True
+-+
+-     return params
+- 
+- 
+-@@ -301,6 +362,11 @@
+- 
+- 
+- def compute_intensity(props: dict, cos_i: float, R: float, cfg):
+-+    """Essential, fast LiDAR radiometry:
+-+    - Diffuse: Lambertian albedo * cos(theta) / R^2
+-+    - Specular: single-lobe strength scaled by (1-rough)^2 and Schlick Fresnel
+-+    - Transmission budget: residual for pass-through = trans_frac * (1 - Fresnel_entry)
+-+    """
+-     def _cfg(name, default):
+-         return getattr(cfg, name, default)
+- 
+-@@ -314,38 +380,48 @@
+-     specular = float(props.get("specular", 0.5))
+-     base_rgb = props.get("base_color", (0.8, 0.8, 0.8))
+-     nir_reflectance = float(props.get("nir_reflectance", _luma(base_rgb)))
+-+    ior = float(props.get("ior", 1.45) or 1.45)
+-+
+-+    # Clearcoat support (small extra specular at normal incidence)
+-+    clearcoat = float(props.get("clearcoat", 0.0) or 0.0)
+-+    clearcoat_rough = max(0.0, min(1.0, float(props.get("clearcoat_roughness", 0.03) or 0.03)))
+- 
+-     cos_i = max(1e-4, float(cos_i))
+-     R = max(1e-3, float(R))
+- 
+-+    # Blend control between reflection and transmission
+-     trans_raw = max(transmission, 1.0 - opacity)
+-     trans_frac = max(0.0, min(1.0, trans_raw))
+- 
+--    F0_lum, ior = _derive_f0_ior(specular, float(props.get("ior", None)))
+-+    # Derive F0 from IOR or specular slider
+-+    F0_lum, ior_eff = _derive_f0_ior(specular, ior if ior > 1.0 else None)
+-     if metallic >= 1.0:
+-+        # Metals are colored specular; approximate with base luma
+-         F0_lum = max(0.02, min(0.98, _luma(base_rgb)))
+- 
+--    a = max(1e-4, rough * rough)
+--    denom = (cos_i * cos_i * (a * a - 1.0) + 1.0)
+--    D = (a * a) / (math.pi * denom * denom)
+--    k = (a + 1.0) * (a + 1.0) / 8.0
+--    G1 = cos_i / (cos_i * (1.0 - k) + k)
+--    G = G1 * G1
+--    F = F0_lum + (1.0 - F0_lum) * (1.0 - cos_i) ** 5
+--    spec_term = (F * D * G) / (4.0 * cos_i * cos_i)
+--
+--    diffuse = (1.0 - metallic) * (1.0 - trans_frac) * (nir_reflectance / math.pi) * cos_i
+--    specular_term = (1.0 - trans_frac) * spec_term
+--
+--    reflectivity = diffuse + specular_term
+-+    # Schlick Fresnel for entry surface
+-+    F_entry = F_schlick(cos_i, F0_lum)
+-+
+-+    # Diffuse: Disney rule, metallic kills diffuse
+-+    diffuse_term = (1.0 - metallic) * (1.0 - trans_frac) * (nir_reflectance / math.pi) * cos_i
+-+
+-+    # Specular: cheap single-lobe scaled by roughness and Fresnel
+-+    spec_strength = specular * (1.0 - rough) * (1.0 - rough)
+-+    specular_term = (1.0 - trans_frac) * spec_strength * F_entry * cos_i
+-+
+-+    # Clearcoat lightweight lobe
+-+    if clearcoat > 0.0:
+-+        cc_strength = 0.25 * clearcoat * (1.0 - clearcoat_rough) * (1.0 - clearcoat_rough)
+-+        specular_term += cc_strength * F_entry * cos_i
+-+
+-+    reflectivity = diffuse_term + specular_term
+-     I = reflectivity / (R ** dist_p)
+-     if beta > 0.0:
+-         I *= math.exp(-2.0 * beta * R)
+- 
+--    Fsurf = transmissive_reflectance(cos_i, ior if ior else 1.45)
+--    residual_T = max(0.0, trans_frac * (1.0 - Fsurf))
+--
+-+    residual_T = max(0.0, trans_frac * (1.0 - F_entry))
+-     return float(I), float(residual_T)
+-+
+- 
+- 
+- def classify_material(props: dict) -> int:

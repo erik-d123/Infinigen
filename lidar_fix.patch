@@ -1,0 +1,428 @@
+--- a/lidar/intensity_model.py
++++ b/lidar/intensity_model.py
+@@ -6,6 +6,36 @@
+ import math
+ import bpy
+ from mathutils import geometry, Vector
++
++# Per-object eval/mesh cache (cleared each frame/subframe)
++_OBJ_GEOM_CACHE: dict[int, dict] = {}
++
++def _frame_key_from_scene():
++    try:
++        sc = bpy.context.scene
++        return (int(getattr(sc, "frame_current", 0)), float(getattr(sc, "frame_subframe", 0.0)))
++    except Exception:
++        return None
++
++def _get_eval_and_mesh(obj, depsgraph):
++    """Return evaluated object and mesh with loop triangles prepared, cached per subframe."""
++    key = id(obj)
++    entry = _OBJ_GEOM_CACHE.get(key)
++    if entry is not None:
++        return entry["eval_obj"], entry["mesh"]
++    try:
++        eval_obj = obj.evaluated_get(depsgraph)
++    except ReferenceError:
++        return obj, getattr(obj, "data", None)
++    mesh = eval_obj.data
++    try:
++        # Prepare geometry once per subframe
++        mesh.calc_loop_triangles()
++    except Exception:
++        pass
++    _OBJ_GEOM_CACHE[key] = {"eval_obj": eval_obj, "mesh": mesh}
++    return eval_obj, mesh
++
+ 
+ _MATERIAL_CACHE: dict[int, dict] = {}
+ _CACHE_LAST_FRAME = None
+@@ -223,6 +253,7 @@
+         frame_key = None
+     if frame_key != _CACHE_LAST_FRAME:
+         _MATERIAL_CACHE.clear()
++        _OBJ_GEOM_CACHE.clear()
+         _CACHE_LAST_FRAME = frame_key
+ 
+ 
+@@ -240,6 +271,7 @@
+         "opacity": 1.0,
+         "clearcoat": 0.0,
+         "clearcoat_roughness": 0.03,
++        "transmission_roughness": 0.0,
+         "is_glass_hint": False,
+         "diffuse_scale": 1.0,
+         "specular_scale": 1.0,
+@@ -250,8 +282,8 @@
+         return defaults
+ 
+     params = dict(defaults)
+-    eval_obj = obj.evaluated_get(depsgraph)
+-    mesh = eval_obj.data
++    # Use cached evaluated object + prepared mesh geometry
++    eval_obj, mesh = _get_eval_and_mesh(obj, depsgraph)
+     uv = _compute_hit_uv(eval_obj, mesh, poly_index, hit_world) if hit_world is not None else None
+ 
+     node = _find_principled_bsdf(mat)
+@@ -273,6 +305,10 @@
+             params["clearcoat_roughness"] = params["clearcoat_roughness"]
+         params["transmission"] = float(_safe_input(node, "Transmission", params["transmission"]))
+         try:
++            params["transmission_roughness"] = float(_safe_input(node, "Transmission Roughness", params.get("transmission_roughness", 0.0)))
++        except Exception:
++            params["transmission_roughness"] = params.get("transmission_roughness", 0.0)
++        try:
+             params["ior"] = float(_safe_input(node, "IOR", params["ior"]))
+         except Exception:
+             params["ior"] = 1.45
+@@ -307,6 +343,9 @@
+         alpha_sample = _sample_socket_texture(node, "Alpha", uv)
+         if alpha_sample is not None:
+             params["opacity"] = float(max(0.0, min(1.0, alpha_sample)))
++        trans_rough_sample = _sample_socket_texture(node, "Transmission Roughness", uv)
++        if trans_rough_sample is not None:
++            params["transmission_roughness"] = float(max(0.0, min(1.0, trans_rough_sample)))
+ 
+     rough = max(0.0, min(1.0, float(params["roughness"])))
+     params["roughness"] = rough
+@@ -339,6 +378,8 @@
+                 params["transmission"] = float(mat["lidar_transmission"])
+             if mat.get("lidar_disable_secondary") is not None:
+                 params["disable_secondary"] = bool(mat["lidar_disable_secondary"])
++            if mat.get("transmission_roughness") is not None:
++                params["transmission_roughness"] = float(mat["transmission_roughness"])
+         except Exception:
+             pass
+ 
+@@ -400,17 +441,24 @@
+     specular_scale = max(0.0, float(props.get("specular_scale", 1.0)))
+     ior = float(props.get("ior", 1.45) or 1.45)
+ 
++    trans_rough = float(props.get("transmission_roughness", props.get("roughness", 0.5)))
++
+     clearcoat = float(props.get("clearcoat", 0.0) or 0.0)
+     clearcoat_rough = max(0.0, min(1.0, float(props.get("clearcoat_roughness", 0.03) or 0.03)))
+ 
+     cos_i = max(1e-4, float(cos_i))
+     R = max(1e-3, float(R))
+ 
+-    trans_raw = max(transmission, 1.0 - opacity)
++    # Alpha vs transmission: only treat low alpha as transmission for glass-like materials.
++    is_glass_like = bool(props.get("is_glass_hint", False))
++    alpha_trans = max(0.0, 1.0 - opacity)
++    if not is_glass_like:
++        alpha_trans = min(alpha_trans, float(getattr(cfg, "alpha_non_glass_cap", 0.2)))
++    trans_raw = max(transmission, alpha_trans)
+     trans_frac = max(0.0, min(1.0, trans_raw))
+ 
+     F0_lum, _ior_eff = _derive_f0_ior(specular, ior if ior > 1.0 else None)
+-    if metallic >= 1.0:
++    if metallic >= 0.5:
+         F0_lum = max(0.02, min(0.98, _luma(base_rgb)))
+ 
+     F_entry = F_schlick(cos_i, F0_lum)
+@@ -418,19 +466,40 @@
+     diffuse_term = (1.0 - metallic) * (1.0 - trans_frac) * diffuse_albedo * cos_i
+     diffuse_term = max(0.0, diffuse_term) * diffuse_scale / math.pi
+ 
+-    spec_strength = specular_scale * specular * (1.0 - rough) * (1.0 - rough)
++    # Specular term with metallic correction and retroreflection clamp
++    # Ignore Principled 'specular' slider for metallic surfaces
++    spec_base = (1.0 - rough) * (1.0 - rough)
++    if metallic >= 0.5:
++        spec_strength = specular_scale * spec_base
++    else:
++        spec_strength = specular_scale * specular * spec_base
+     specular_term = (1.0 - trans_frac) * spec_strength * F_entry * cos_i
++
++    # Gaussian backscatter clamp toward retroreflection
++    sigma_min = float(getattr(cfg, "retro_sigma_min", 0.05))
++    sigma_k   = float(getattr(cfg, "retro_sigma_scale", 0.3))
++    sigma     = max(sigma_min, sigma_k * max(1e-3, rough))
++    one_minus_cos = max(0.0, 1.0 - cos_i)
++    retro_gain = math.exp(- (one_minus_cos * one_minus_cos) / (2.0 * sigma * sigma))
++    specular_term *= retro_gain
+ 
+     if clearcoat > 0.0:
+         cc_strength = specular_scale * 0.25 * clearcoat * (1.0 - clearcoat_rough) * (1.0 - clearcoat_rough)
+         specular_term += cc_strength * F_entry * cos_i
++
++    # Frosted/transmission roughness reduces both primary mirror-like return and transmitted residual
++    frosted_k = float(getattr(cfg, "transmission_roughness_strength", 0.5))
++    frosted_scale = max(0.0, 1.0 - frosted_k * trans_rough)
++    if trans_frac > 0.0:
++        specular_term *= frosted_scale
+ 
+     reflectivity = max(0.0, diffuse_term + specular_term)
+     I = reflectivity / (R ** dist_p)
+     if beta > 0.0:
+         I *= math.exp(-2.0 * beta * R)
+ 
+-    residual_T = max(0.0, trans_frac * (1.0 - F_entry))
++    # Residual transmission for pass-through, damped by transmission roughness
++    residual_T = max(0.0, trans_frac * (1.0 - F_entry)) * frosted_scale
+     if props.get("disable_secondary", False):
+         residual_T = 0.0
+     return float(I), float(residual_T)
+--- a/lidar/lidar_raycast.py
++++ b/lidar/lidar_raycast.py
+@@ -8,6 +8,39 @@
+ import random
+ import numpy as np
+ from mathutils import Vector
++
++# Per-object evaluated geometry cache, cleared at each perform_raycasting call
++_OBJ_CACHE = {}
++
++def _prepare_eval(obj, depsgraph):
++    """Return cached evaluated object, mesh, and transforms."""
++    key = id(obj)
++    entry = _OBJ_CACHE.get(key)
++    if entry is not None:
++        return entry
++    try:
++        eval_obj = obj.evaluated_get(depsgraph)
++    except ReferenceError:
++        return {"eval_obj": obj, "mesh": getattr(obj, "data", None), "world": getattr(obj, "matrix_world", None), "inv_world": None}
++    mesh = eval_obj.data
++    try:
++        mesh.calc_normals_split()
++    except Exception:
++        pass
++    try:
++        mesh.calc_loop_triangles()
++    except Exception:
++        pass
++    entry = {
++        "eval_obj": eval_obj,
++        "mesh": mesh,
++        "world": eval_obj.matrix_world,
++        "inv_world": eval_obj.matrix_world.inverted(),
++        "world3x3": eval_obj.matrix_world.to_3x3(),
++    }
++    _OBJ_CACHE[key] = entry
++    return entry
++
+ 
+ 
+ # Support both package and script execution contexts
+@@ -47,10 +80,39 @@
+ 
+ 
+ def _compute_shading_normal(obj, depsgraph, poly_index, hit_world, fallback_normal):
+-    try:
+-        eval_obj = obj.evaluated_get(depsgraph)
+-    except ReferenceError:
++    entry = _prepare_eval(obj, depsgraph)
++    eval_obj = entry.get("eval_obj")
++    mesh = entry.get("mesh")
++    inv_world = entry.get("inv_world")
++    if mesh is None or inv_world is None:
+         return fallback_normal
++    hit_local = inv_world @ hit_world
++    for tri in mesh.loop_triangles:
++        if tri.polygon_index != poly_index:
++            continue
++        verts = [mesh.vertices[i].co for i in tri.vertices]
++        bary = _barycentric_coords(verts, hit_local)
++        if bary is None:
++            continue
++        loops = tri.loops
++        if not hasattr(mesh, "loops"):
++            return fallback_normal
++        if tri.polygon_index >= len(mesh.polygons):
++            return fallback_normal
++        poly = mesh.polygons[tri.polygon_index]
++        if not hasattr(mesh, "loops"):
++            return fallback_normal
++        nrm_local = poly.normal.copy()
++        for i, w in zip(loops, bary):
++            try:
++                nrm_local = nrm_local + mesh.loops[i].normal * w
++            except Exception:
++                pass
++        nrm_local.normalize()
++        nrm_world = eval_obj.matrix_world.to_3x3() @ nrm_local
++        if nrm_world.length_squared > 1e-12:
++            return nrm_world.normalized()
++    return fallback_normal
+     mesh = eval_obj.data
+     mesh.calc_normals_split()
+     mesh.calc_loop_triangles()
+@@ -71,29 +133,32 @@
+         if normal_world.length_squared > 1e-12:
+             return normal_world.normalized()
+     return fallback_normal
++
+ def _beer_lambert_transmittance(obj, depsgraph, entry_loc, direction_world, bias, extinction_coeff):
+     if extinction_coeff <= 0.0:
+         return 1.0
+-    try:
+-        eval_obj = obj.evaluated_get(depsgraph)
+-    except ReferenceError:
+-        return 1.0
+-    mat_inv = eval_obj.matrix_world.inverted()
++    entry = _prepare_eval(obj, depsgraph)
++    mesh = entry.get("mesh")
++    world = entry.get("world")
++    inv_world = entry.get("inv_world")
++    if mesh is None or world is None or inv_world is None:
++        return 1.0
+     origin_world = entry_loc + direction_world * max(bias, 1e-4)
+-    origin_local = mat_inv @ origin_world
+-    dir_local = mat_inv.to_3x3() @ direction_world
++    origin_local = inv_world @ origin_world
++    dir_local = inv_world.to_3x3() @ direction_world
+     if dir_local.length_squared == 0.0:
+         return 1.0
+     dir_local.normalize()
+     try:
+-        hit, location_local, *_ = eval_obj.ray_cast(origin_local, dir_local)
++        hit, location_local, *_ = entry["eval_obj"].ray_cast(origin_local, dir_local)
+     except AttributeError:
+         return 1.0
+     if not hit:
+         return 1.0
+-    exit_world = eval_obj.matrix_world @ location_local
++    exit_world = world @ location_local
+     thickness = max(0.0, (exit_world - entry_loc).length)
+     return math.exp(-extinction_coeff * thickness)
++
+ 
+ 
+ def generate_sensor_rays(config):
+@@ -123,6 +188,7 @@
+     )
+ 
+ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_rad, el_rad, t_offsets, cfg):
++    _OBJ_CACHE.clear()
+     # Cast rays and compute LiDAR returns with material-aware intensities
+     
+     # Output collections
+@@ -218,7 +284,7 @@
+                                 I02, _ = compute_intensity(props2, cos_i2, total_dist, cfg)
+ 
+                                 transmission_scale = residual_T
+-                                if cfg.secondary_extinction > 0.0:
++                                if cfg.secondary_extinction > 0.0 and transmission_scale > cfg.secondary_min_residual:
+                                     transmission_scale *= _beer_lambert_transmittance(
+                                         obj, depsgraph, loc, dv, cfg.secondary_ray_bias, cfg.secondary_extinction
+                                     )
+--- a/lidar/lidar_config.py
++++ b/lidar/lidar_config.py
+@@ -128,6 +128,11 @@
+         self.global_scale = global_scale
+         # Atmospheric attenuation disabled for indoor usage
+         self.beta_atm = 0.0
++        # Intensity tuning knobs
++        self.retro_sigma_min = 0.05          # radians
++        self.retro_sigma_scale = 0.3         # scales with roughness
++        self.transmission_roughness_strength = 0.5  # damp both specular and residual
++        self.alpha_non_glass_cap = 0.2       # max alpha->transmission for non-glass
+ 
+         # Sensor timing and motion
+         self.rpm = rpm or preset_data["default_rpm"]
+@@ -171,6 +176,10 @@
+             "auto_expose": self.auto_expose,
+             "global_scale": self.global_scale,
+             "beta_atm": self.beta_atm,
++            "retro_sigma_min": self.retro_sigma_min,
++            "retro_sigma_scale": self.retro_sigma_scale,
++            "transmission_roughness_strength": self.transmission_roughness_strength,
++            "alpha_non_glass_cap": self.alpha_non_glass_cap,
+             "rpm": self.rpm,
+             "continuous_spin": self.continuous_spin,
+             "rolling_shutter": self.rolling_shutter,
+--- a/README_LIDAR.md
++++ b/README_LIDAR.md
+@@ -3,6 +3,11 @@
+ This tool generates LiDAR ground truth for Infinigen indoor scenes with indoor-focused defaults (close-range hits enabled, no atmospheric attenuation, dense returns). Run commands from the repository root unless otherwise noted.
+ 
+ ## Features
++
++- Metallic handling: F0 from base color, ignores Principled 'Specular' when metallic.
++- Retroreflection clamp for smooth mirrors to avoid grazing blow-up.
++- Transmission roughness damps both primary specular and pass-through residual.
++- Alpha treated as transmission only for glass-like materials; capped for decals/paints.
+ 
+ - Indoor-oriented sensor presets: `VLP-16`, `HDL-32E`, `HDL-64E`, `OS1-128`
+ - Material-aware intensity model (diffuse + specular) with optional percentile auto exposure
+--- a/tests/lidar/test_lidar_sanity.py
++++ b/tests/lidar/test_lidar_sanity.py
+@@ -123,3 +123,76 @@
+     if res.get("transmittance") is not None:
+         trans = np.asarray(res["transmittance"], dtype=float)
+         assert np.all(trans >= 0.0)
++
++
++def test_metallic_specular_independence():
++    """Metallic intensity should ignore Principled 'Specular' slider."""
++    import bpy
++    from lidar.lidar_config import LidarConfig
++    from lidar.intensity_model import compute_intensity, extract_material_properties
++    from scripts import debug_lidar_checks as lidar_debug
++
++    lidar_debug.reset_scene()
++    plane = lidar_debug.make_plane("MetalPlane")
++    # Material A: metallic=1.0, specular=0.0
++    mat_a = lidar_debug.make_principled_material("MetalA", base_color=(0.8,0.8,0.8,1.0), metallic=1.0, specular=0.0, roughness=0.05)
++    # Material B: metallic=1.0, specular=1.0
++    mat_b = lidar_debug.make_principled_material("MetalB", base_color=(0.8,0.8,0.8,1.0), metallic=1.0, specular=1.0, roughness=0.05)
++
++    cfg = LidarConfig()
++    cfg.auto_expose = False
++    cfg.global_scale = 1.0
++    depsgraph = bpy.context.evaluated_depsgraph_get()
++
++    # Assign and sample
++    plane.data.materials.clear()
++    plane.data.materials.append(mat_a)
++    props_a = extract_material_properties(plane, 0, depsgraph)
++    I_a, _ = compute_intensity(props_a, cos_i=1.0, R=5.0, cfg=cfg)
++
++    plane.data.materials[0] = mat_b
++    props_b = extract_material_properties(plane, 0, depsgraph)
++    I_b, _ = compute_intensity(props_b, cos_i=1.0, R=5.0, cfg=cfg)
++
++    assert abs(I_a - I_b) < 1e-4
++
++
++def test_frosted_transmission_roughness_damps_returns():
++    """Frosted glass reduces primary specular and secondary residual."""
++    import bpy
++    from lidar.lidar_config import LidarConfig
++    from lidar.intensity_model import compute_intensity, extract_material_properties
++    from scripts import debug_lidar_checks as lidar_debug
++
++    lidar_debug.reset_scene()
++    plane = lidar_debug.make_plane("GlassPlane")
++    # Clear glass
++    glass_clear = lidar_debug.make_principled_material("GlassClear", base_color=(1,1,1,1), metallic=0.0, roughness=0.0, transmission=0.98)
++    # Frosted glass with transmission roughness
++    glass_frost = lidar_debug.make_principled_material("GlassFrost", base_color=(1,1,1,1), metallic=0.0, roughness=0.0, transmission=0.98)
++    try:
++        bsdf = glass_frost.node_tree.nodes["Principled BSDF"]
++        if bsdf.inputs.get("Transmission Roughness") is not None:
++            bsdf.inputs["Transmission Roughness"].default_value = 0.8
++        else:
++            glass_frost["transmission_roughness"] = 0.8
++    except Exception:
++        glass_frost["transmission_roughness"] = 0.8
++
++    cfg = LidarConfig()
++    cfg.auto_expose = False
++    cfg.global_scale = 1.0
++    depsgraph = bpy.context.evaluated_depsgraph_get()
++
++    plane.data.materials.clear()
++    plane.data.materials.append(glass_clear)
++    props_c = extract_material_properties(plane, 0, depsgraph)
++    I_c, residual_c = compute_intensity(props_c, cos_i=0.95, R=3.0, cfg=cfg)
++
++    plane.data.materials[0] = glass_frost
++    props_f = extract_material_properties(plane, 0, depsgraph)
++    I_f, residual_f = compute_intensity(props_f, cos_i=0.95, R=3.0, cfg=cfg)
++
++    assert I_f < I_c
++    assert residual_f < residual_c
++

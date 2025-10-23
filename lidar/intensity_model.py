@@ -7,6 +7,36 @@ import math
 import bpy
 from mathutils import geometry, Vector
 
+# Per-object eval/mesh cache (cleared each frame/subframe)
+_OBJ_GEOM_CACHE: dict[int, dict] = {}
+
+def _frame_key_from_scene():
+    try:
+        sc = bpy.context.scene
+        return (int(getattr(sc, "frame_current", 0)), float(getattr(sc, "frame_subframe", 0.0)))
+    except Exception:
+        return None
+
+def _get_eval_and_mesh(obj, depsgraph):
+    """Return evaluated object and mesh with loop triangles prepared, cached per subframe."""
+    key = id(obj)
+    entry = _OBJ_GEOM_CACHE.get(key)
+    if entry is not None:
+        return entry["eval_obj"], entry["mesh"]
+    try:
+        eval_obj = obj.evaluated_get(depsgraph)
+    except ReferenceError:
+        return obj, getattr(obj, "data", None)
+    mesh = eval_obj.data
+    try:
+        # Prepare geometry once per subframe
+        mesh.calc_loop_triangles()
+    except Exception:
+        pass
+    _OBJ_GEOM_CACHE[key] = {"eval_obj": eval_obj, "mesh": mesh}
+    return eval_obj, mesh
+
+
 _MATERIAL_CACHE: dict[int, dict] = {}
 _CACHE_LAST_FRAME = None
 
@@ -223,6 +253,7 @@ def _maybe_clear_cache():
         frame_key = None
     if frame_key != _CACHE_LAST_FRAME:
         _MATERIAL_CACHE.clear()
+        _OBJ_GEOM_CACHE.clear()
         _CACHE_LAST_FRAME = frame_key
 
 
@@ -240,6 +271,7 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
         "opacity": 1.0,
         "clearcoat": 0.0,
         "clearcoat_roughness": 0.03,
+        "transmission_roughness": 0.0,
         "is_glass_hint": False,
         "diffuse_scale": 1.0,
         "specular_scale": 1.0,
@@ -250,8 +282,8 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
         return defaults
 
     params = dict(defaults)
-    eval_obj = obj.evaluated_get(depsgraph)
-    mesh = eval_obj.data
+    # Use cached evaluated object + prepared mesh geometry
+    eval_obj, mesh = _get_eval_and_mesh(obj, depsgraph)
     uv = _compute_hit_uv(eval_obj, mesh, poly_index, hit_world) if hit_world is not None else None
 
     node = _find_principled_bsdf(mat)
@@ -272,6 +304,10 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
         except Exception:
             params["clearcoat_roughness"] = params["clearcoat_roughness"]
         params["transmission"] = float(_safe_input(node, "Transmission", params["transmission"]))
+        try:
+            params["transmission_roughness"] = float(_safe_input(node, "Transmission Roughness", params.get("transmission_roughness", 0.0)))
+        except Exception:
+            params["transmission_roughness"] = params.get("transmission_roughness", 0.0)
         try:
             params["ior"] = float(_safe_input(node, "IOR", params["ior"]))
         except Exception:
@@ -307,6 +343,9 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
         alpha_sample = _sample_socket_texture(node, "Alpha", uv)
         if alpha_sample is not None:
             params["opacity"] = float(max(0.0, min(1.0, alpha_sample)))
+        trans_rough_sample = _sample_socket_texture(node, "Transmission Roughness", uv)
+        if trans_rough_sample is not None:
+            params["transmission_roughness"] = float(max(0.0, min(1.0, trans_rough_sample)))
 
     rough = max(0.0, min(1.0, float(params["roughness"])))
     params["roughness"] = rough
@@ -339,6 +378,8 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
                 params["transmission"] = float(mat["lidar_transmission"])
             if mat.get("lidar_disable_secondary") is not None:
                 params["disable_secondary"] = bool(mat["lidar_disable_secondary"])
+            if mat.get("transmission_roughness") is not None:
+                params["transmission_roughness"] = float(mat["transmission_roughness"])
         except Exception:
             pass
 
@@ -400,17 +441,24 @@ def compute_intensity(props: dict, cos_i: float, R: float, cfg):
     specular_scale = max(0.0, float(props.get("specular_scale", 1.0)))
     ior = float(props.get("ior", 1.45) or 1.45)
 
+    trans_rough = float(props.get("transmission_roughness", props.get("roughness", 0.5)))
+
     clearcoat = float(props.get("clearcoat", 0.0) or 0.0)
     clearcoat_rough = max(0.0, min(1.0, float(props.get("clearcoat_roughness", 0.03) or 0.03)))
 
     cos_i = max(1e-4, float(cos_i))
     R = max(1e-3, float(R))
 
-    trans_raw = max(transmission, 1.0 - opacity)
+    # Alpha vs transmission: only treat low alpha as transmission for glass-like materials.
+    is_glass_like = bool(props.get("is_glass_hint", False))
+    alpha_trans = max(0.0, 1.0 - opacity)
+    if not is_glass_like:
+        alpha_trans = min(alpha_trans, float(getattr(cfg, "alpha_non_glass_cap", 0.2)))
+    trans_raw = max(transmission, alpha_trans)
     trans_frac = max(0.0, min(1.0, trans_raw))
 
     F0_lum, _ior_eff = _derive_f0_ior(specular, ior if ior > 1.0 else None)
-    if metallic >= 1.0:
+    if metallic >= 0.5:
         F0_lum = max(0.02, min(0.98, _luma(base_rgb)))
 
     F_entry = F_schlick(cos_i, F0_lum)
@@ -418,19 +466,40 @@ def compute_intensity(props: dict, cos_i: float, R: float, cfg):
     diffuse_term = (1.0 - metallic) * (1.0 - trans_frac) * diffuse_albedo * cos_i
     diffuse_term = max(0.0, diffuse_term) * diffuse_scale / math.pi
 
-    spec_strength = specular_scale * specular * (1.0 - rough) * (1.0 - rough)
+    # Specular term with metallic correction and retroreflection clamp
+    # Ignore Principled 'specular' slider for metallic surfaces
+    spec_base = (1.0 - rough) * (1.0 - rough)
+    if metallic >= 0.5:
+        spec_strength = specular_scale * spec_base
+    else:
+        spec_strength = specular_scale * specular * spec_base
     specular_term = (1.0 - trans_frac) * spec_strength * F_entry * cos_i
+
+    # Gaussian backscatter clamp toward retroreflection
+    sigma_min = float(getattr(cfg, "retro_sigma_min", 0.05))
+    sigma_k   = float(getattr(cfg, "retro_sigma_scale", 0.3))
+    sigma     = max(sigma_min, sigma_k * max(1e-3, rough))
+    one_minus_cos = max(0.0, 1.0 - cos_i)
+    retro_gain = math.exp(- (one_minus_cos * one_minus_cos) / (2.0 * sigma * sigma))
+    specular_term *= retro_gain
 
     if clearcoat > 0.0:
         cc_strength = specular_scale * 0.25 * clearcoat * (1.0 - clearcoat_rough) * (1.0 - clearcoat_rough)
         specular_term += cc_strength * F_entry * cos_i
+
+    # Frosted/transmission roughness reduces both primary mirror-like return and transmitted residual
+    frosted_k = float(getattr(cfg, "transmission_roughness_strength", 0.5))
+    frosted_scale = max(0.0, 1.0 - frosted_k * trans_rough)
+    if trans_frac > 0.0:
+        specular_term *= frosted_scale
 
     reflectivity = max(0.0, diffuse_term + specular_term)
     I = reflectivity / (R ** dist_p)
     if beta > 0.0:
         I *= math.exp(-2.0 * beta * R)
 
-    residual_T = max(0.0, trans_frac * (1.0 - F_entry))
+    # Residual transmission for pass-through, damped by transmission roughness
+    residual_T = max(0.0, trans_frac * (1.0 - F_entry)) * frosted_scale
     if props.get("disable_secondary", False):
         residual_T = 0.0
     return float(I), float(residual_T)

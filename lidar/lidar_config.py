@@ -128,6 +128,11 @@ class LidarConfig:
         self.global_scale = global_scale
         # Atmospheric attenuation disabled for indoor usage
         self.beta_atm = 0.0
+        # Intensity tuning knobs
+        self.retro_sigma_min = 0.05          # radians
+        self.retro_sigma_scale = 0.3         # scales with roughness
+        self.transmission_roughness_strength = 0.5  # damp both specular and residual
+        self.alpha_non_glass_cap = 0.2       # max alpha->transmission for non-glass
 
         # Sensor timing and motion
         self.rpm = rpm or preset_data["default_rpm"]
@@ -171,6 +176,10 @@ class LidarConfig:
             "auto_expose": self.auto_expose,
             "global_scale": self.global_scale,
             "beta_atm": self.beta_atm,
+            "retro_sigma_min": self.retro_sigma_min,
+            "retro_sigma_scale": self.retro_sigma_scale,
+            "transmission_roughness_strength": self.transmission_roughness_strength,
+            "alpha_non_glass_cap": self.alpha_non_glass_cap,
             "rpm": self.rpm,
             "continuous_spin": self.continuous_spin,
             "rolling_shutter": self.rolling_shutter,
