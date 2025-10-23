@@ -197,6 +197,7 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
 
                 if (
                     cfg.enable_secondary
+                    and not props.get("disable_secondary", False)
                     and residual_T > cfg.secondary_min_residual
                     and (cfg.max_range - dist) > cfg.secondary_ray_bias
                     and cos_i >= getattr(cfg, "secondary_min_cos", 0.95)

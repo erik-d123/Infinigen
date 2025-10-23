@@ -46,6 +46,20 @@ python -m infinigen.launch_blender --background --python lidar/lidar_generator.p
   --seed 0
 ```
 
+### Programmatic Use (inside Blender)
+
+```python
+from lidar.lidar_generator import generate_for_scene
+
+generate_for_scene(
+    scene_path="outputs/indoors/example/scene.blend",
+    output_dir="outputs/lidar/example",
+    frames=[1, 2, 3],
+    camera_name="Camera",
+    cfg_kwargs={"preset": "HDL-32E", "auto_expose": True},
+)
+```
+
 Key arguments:
 - `--output_dir`: Destination directory (auto-generated if omitted)
 - `--frames`: Single value, comma list, or inclusive range
@@ -84,6 +98,11 @@ Defaults are tuned for indoor scanning:
 4. Minimum range 5 cm to retain close geometry
 5. No random dropout; grazing acceptance allows all non-backfacing hits
 6. Percentile-based coloring in the viewer for stable contrast
+7. Per-material overrides (set on the Blender material):
+   - `lidar_diffuse` or `lidar_diffuse_scale` to tweak diffuse albedo
+   - `lidar_specular_scale` to boost or reduce specular return
+   - `lidar_transmission` to force pass-through fraction
+   - `lidar_disable_secondary` (bool) to block secondary returns for special cases
 
 ## Outputs
 

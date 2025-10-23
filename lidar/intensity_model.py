@@ -10,6 +10,14 @@ from mathutils import geometry, Vector
 _MATERIAL_CACHE: dict[int, dict] = {}
 _CACHE_LAST_FRAME = None
 
+
+def F_schlick(cos_theta: float, F0: float) -> float:
+    """Schlick Fresnel approximation used for specular reflectance."""
+    cos_theta = max(0.0, min(1.0, float(cos_theta)))
+    F0 = max(0.0, min(1.0, float(F0)))
+    one_minus = 1.0 - cos_theta
+    return F0 + (1.0 - F0) * (one_minus ** 5)
+
 def _scan_node_tree_transmission(mat: bpy.types.Material):
     """Heuristic: detect Transparent/Glass/Refraction nodes and Mix Shader factors.
     Returns (transmission_hint, ior_hint, is_glass_hint).
@@ -230,11 +238,12 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
         "transmission": 0.0,
         "ior": 1.45,
         "opacity": 1.0,
-        "F0_lum": 0.04,
-        "nir_reflectance": 0.6,
         "clearcoat": 0.0,
         "clearcoat_roughness": 0.03,
         "is_glass_hint": False,
+        "diffuse_scale": 1.0,
+        "specular_scale": 1.0,
+        "disable_secondary": False,
     }
 
     if mat is None:
@@ -316,15 +325,22 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
     params["F0_dielectric"] = dielectric_f0
     params["base_luma"] = base_luma
     params["F0_lum"] = (1.0 - metal) * dielectric_f0 + metal * max(0.02, min(0.95, base_luma))
+    params["diffuse_albedo"] = max(0.02, min(0.98, base_luma))
 
-    nir = base_luma
-    try:
-        if hasattr(mat, "get") and mat.get("nir_reflectance") is not None:
-            nir = float(mat["nir_reflectance"])
-    except Exception:
-        pass
-    nir = max(0.05, min(0.9, nir))
-    params["nir_reflectance"] = (nir ** 0.8) * (1.0 - min(1.0, metal))
+    if hasattr(mat, "get"):
+        try:
+            if mat.get("lidar_diffuse") is not None:
+                params["diffuse_albedo"] = float(mat["lidar_diffuse"])
+            if mat.get("lidar_diffuse_scale") is not None:
+                params["diffuse_scale"] = float(mat["lidar_diffuse_scale"])
+            if mat.get("lidar_specular_scale") is not None:
+                params["specular_scale"] = float(mat["lidar_specular_scale"])
+            if mat.get("lidar_transmission") is not None:
+                params["transmission"] = float(mat["lidar_transmission"])
+            if mat.get("lidar_disable_secondary") is not None:
+                params["disable_secondary"] = bool(mat["lidar_disable_secondary"])
+        except Exception:
+            pass
 
     if not has_textures:
         _MATERIAL_CACHE[key] = dict(params)
@@ -379,47 +395,44 @@ def compute_intensity(props: dict, cos_i: float, R: float, cfg):
     opacity = float(props.get("opacity", 1.0) or 1.0)
     specular = float(props.get("specular", 0.5))
     base_rgb = props.get("base_color", (0.8, 0.8, 0.8))
-    nir_reflectance = float(props.get("nir_reflectance", _luma(base_rgb)))
+    diffuse_albedo = max(0.0, min(1.0, float(props.get("diffuse_albedo", _luma(base_rgb)))))
+    diffuse_scale = max(0.0, float(props.get("diffuse_scale", 1.0)))
+    specular_scale = max(0.0, float(props.get("specular_scale", 1.0)))
     ior = float(props.get("ior", 1.45) or 1.45)
 
-    # Clearcoat support (small extra specular at normal incidence)
     clearcoat = float(props.get("clearcoat", 0.0) or 0.0)
     clearcoat_rough = max(0.0, min(1.0, float(props.get("clearcoat_roughness", 0.03) or 0.03)))
 
     cos_i = max(1e-4, float(cos_i))
     R = max(1e-3, float(R))
 
-    # Blend control between reflection and transmission
     trans_raw = max(transmission, 1.0 - opacity)
     trans_frac = max(0.0, min(1.0, trans_raw))
 
-    # Derive F0 from IOR or specular slider
-    F0_lum, ior_eff = _derive_f0_ior(specular, ior if ior > 1.0 else None)
+    F0_lum, _ior_eff = _derive_f0_ior(specular, ior if ior > 1.0 else None)
     if metallic >= 1.0:
-        # Metals are colored specular; approximate with base luma
         F0_lum = max(0.02, min(0.98, _luma(base_rgb)))
 
-    # Schlick Fresnel for entry surface
     F_entry = F_schlick(cos_i, F0_lum)
 
-    # Diffuse: Disney rule, metallic kills diffuse
-    diffuse_term = (1.0 - metallic) * (1.0 - trans_frac) * (nir_reflectance / math.pi) * cos_i
+    diffuse_term = (1.0 - metallic) * (1.0 - trans_frac) * diffuse_albedo * cos_i
+    diffuse_term = max(0.0, diffuse_term) * diffuse_scale / math.pi
 
-    # Specular: cheap single-lobe scaled by roughness and Fresnel
-    spec_strength = specular * (1.0 - rough) * (1.0 - rough)
+    spec_strength = specular_scale * specular * (1.0 - rough) * (1.0 - rough)
     specular_term = (1.0 - trans_frac) * spec_strength * F_entry * cos_i
 
-    # Clearcoat lightweight lobe
     if clearcoat > 0.0:
-        cc_strength = 0.25 * clearcoat * (1.0 - clearcoat_rough) * (1.0 - clearcoat_rough)
+        cc_strength = specular_scale * 0.25 * clearcoat * (1.0 - clearcoat_rough) * (1.0 - clearcoat_rough)
         specular_term += cc_strength * F_entry * cos_i
 
-    reflectivity = diffuse_term + specular_term
+    reflectivity = max(0.0, diffuse_term + specular_term)
     I = reflectivity / (R ** dist_p)
     if beta > 0.0:
         I *= math.exp(-2.0 * beta * R)
 
     residual_T = max(0.0, trans_frac * (1.0 - F_entry))
+    if props.get("disable_secondary", False):
+        residual_T = 0.0
     return float(I), float(residual_T)
 
 

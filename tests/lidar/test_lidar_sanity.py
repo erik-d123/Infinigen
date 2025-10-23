@@ -48,7 +48,7 @@ def test_principled_material_property_extraction():
     assert props["opacity"] == pytest.approx(1.0, abs=1e-6)
     assert props["metallic"] == pytest.approx(0.75, rel=1e-2)
     assert props["roughness"] == pytest.approx(0.15, rel=5e-2)
-    assert 0.0 <= props["nir_reflectance"] <= 1.0
+    assert 0.0 <= props["diffuse_albedo"] <= 1.0
     assert props["F0_lum"] >= 0.02
 
 

@@ -323,7 +323,7 @@ def run_on_current_scene(output_dir: str,
     for fr in frames:
         nhit, phase, res = process_frame(
             scene, cam, fr, fps, output_dir, cfg, sensor_R, precomp, phase,
-            write_ply=True, write_kitti=False,
+            write_ply=True,
         )
         total_pts += nhit
 
@@ -359,6 +359,23 @@ def run_on_current_scene(output_dir: str,
 
     print(f"Frames: {len(frames)}, Total points: {total_pts:,}")
     print(f"Output: {os.path.abspath(output_dir)}")
+
+
+def generate_for_scene(scene_path: str,
+                       output_dir: str,
+                       frames: list[int],
+                       camera_name: str | None = None,
+                       cfg_kwargs: dict | None = None):
+    """Programmatic helper for pipeline integration.
+
+    Opens the provided .blend, configures a LiDAR sensor from kwargs, and
+    runs the same emission logic as the CLI.
+    """
+    cfg_kwargs = cfg_kwargs or {}
+    setup_scene(scene_path)
+    cfg = LidarConfig(**cfg_kwargs)
+    run_on_current_scene(output_dir=output_dir, frames=frames, camera_name=camera_name, cfg=cfg)
+    return cfg
 
 if __name__ == "__main__":
     main()

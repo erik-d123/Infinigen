@@ -130,7 +130,7 @@ def test_indoor_material(scene_path: Path):
             "material": mat.name,
             "opacity": props["opacity"],
             "metallic": props["metallic"],
-            "nir_reflectance": props["nir_reflectance"],
+            "diffuse_albedo": props["diffuse_albedo"],
         }
     raise RuntimeError("No mesh with material found in scene")
 
