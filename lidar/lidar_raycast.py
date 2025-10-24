@@ -113,27 +113,6 @@ def _compute_shading_normal(obj, depsgraph, poly_index, hit_world, fallback_norm
         if nrm_world.length_squared > 1e-12:
             return nrm_world.normalized()
     return fallback_normal
-    mesh = eval_obj.data
-    mesh.calc_normals_split()
-    mesh.calc_loop_triangles()
-    inv_world = eval_obj.matrix_world.inverted()
-    hit_local = inv_world @ hit_world
-    for tri in mesh.loop_triangles:
-        if tri.polygon_index != poly_index:
-            continue
-        verts = [mesh.vertices[i].co for i in tri.vertices]
-        bary = _barycentric_coords(verts, hit_local)
-        if bary is None:
-            continue
-        loops = tri.loops
-        normal_local = Vector((0.0, 0.0, 0.0))
-        for weight, loop_index in zip(bary, loops):
-            normal_local += weight * mesh.loops[loop_index].normal
-        normal_world = eval_obj.matrix_world.to_3x3() @ normal_local
-        if normal_world.length_squared > 1e-12:
-            return normal_world.normalized()
-    return fallback_normal
-
 def _beer_lambert_transmittance(obj, depsgraph, entry_loc, direction_world, bias, extinction_coeff):
     if extinction_coeff <= 0.0:
         return 1.0

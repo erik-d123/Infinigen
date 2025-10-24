@@ -171,7 +171,6 @@ def _compute_hit_uv(eval_obj, mesh, poly_index, hit_world):
     uv_layer = mesh.uv_layers.active
     inv_world = eval_obj.matrix_world.inverted()
     hit_local = inv_world @ hit_world
-    mesh.calc_loop_triangles()
     for tri in mesh.loop_triangles:
         if tri.polygon_index != poly_index:
             continue
@@ -213,7 +212,7 @@ def _sample_socket_texture(node, socket_name, uv):
 def _material_has_textures(node):
     if node is None:
         return False
-    for name in ("Base Color", "Roughness", "Metallic", "Transmission", "Alpha"):
+    for name in ("Base Color", "Roughness", "Metallic", "Transmission", "Alpha", "Transmission Roughness"):
         sock = node.inputs.get(name)
         if sock and sock.is_linked:
             return True
@@ -222,8 +221,7 @@ def _material_has_textures(node):
 
 def get_material_from_hit(obj: bpy.types.Object, poly_index: int, depsgraph) -> bpy.types.Material | None:
     try:
-        eval_obj = obj.evaluated_get(depsgraph)
-        mesh = eval_obj.data
+        eval_obj, mesh = _get_eval_and_mesh(obj, depsgraph)
         if not hasattr(mesh, "polygons") or poly_index < 0:
             return None
         poly = mesh.polygons[poly_index]
