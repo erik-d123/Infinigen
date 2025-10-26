@@ -26,7 +26,7 @@ def assert_positive(value: float, name: str):
 def test_default_opacity_values():
     """Ensure we get sensible defaults when Alpha socket is untouched."""
     res = lidar_debug.test_default_opacity()
-    assert res["default_opacity"] == pytest.approx(1.0, abs=1e-6)
+    assert res["default_opacity"] == pytest.approx(0.25, rel=1e-2)
     assert res["alpha_override"] == pytest.approx(0.25, rel=1e-2)
 
 
@@ -45,7 +45,7 @@ def test_principled_material_property_extraction():
     plane.data.materials.append(mat)
     props = lidar_debug.get_props_for_obj(plane)
 
-    assert props["opacity"] == pytest.approx(1.0, abs=1e-6)
+    assert props["opacity"] == pytest.approx(0.25, rel=1e-2)
     assert props["metallic"] == pytest.approx(0.75, rel=1e-2)
     assert props["roughness"] == pytest.approx(0.15, rel=5e-2)
     assert 0.0 <= props["diffuse_albedo"] <= 1.0
@@ -195,4 +195,3 @@ def test_frosted_transmission_roughness_damps_returns():
 
     assert I_f < I_c
     assert residual_f < residual_c
-

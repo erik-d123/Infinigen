@@ -17,7 +17,13 @@ def _prepare_eval(obj, depsgraph):
     key = id(obj)
     entry = _OBJ_CACHE.get(key)
     if entry is not None:
-        return entry
+        current_names = [
+            getattr(slot.material, "name", None) if slot.material else None
+            for slot in getattr(obj, "material_slots", [])
+        ]
+        if entry.get("material_names") == current_names:
+            return entry
+        _OBJ_CACHE.pop(key, None)
     try:
         eval_obj = obj.evaluated_get(depsgraph)
     except ReferenceError:
@@ -37,6 +43,10 @@ def _prepare_eval(obj, depsgraph):
         "world": eval_obj.matrix_world,
         "inv_world": eval_obj.matrix_world.inverted(),
         "world3x3": eval_obj.matrix_world.to_3x3(),
+        "material_names": [
+            getattr(slot.material, "name", None) if slot.material else None
+            for slot in getattr(obj, "material_slots", [])
+        ],
     }
     _OBJ_CACHE[key] = entry
     return entry
@@ -293,6 +303,17 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_
             continue
 
         returns.sort(key=lambda r: r["range"])
+        if getattr(cfg, "secondary_merge_eps", 0.0) and len(returns) > 1:
+            merged = [returns[0]]
+            for ret in returns[1:]:
+                if abs(ret["range"] - merged[-1]["range"]) <= cfg.secondary_merge_eps:
+                    merged[-1]["intensity"] += float(ret.get("intensity", 0.0))
+                    merged[-1]["transmittance"] = float(merged[-1].get("transmittance", 1.0)) * float(ret.get("transmittance", 1.0))
+                else:
+                    merged.append(ret)
+            returns = merged
+        if len(returns) > 2:
+            returns = [returns[0], returns[1]]
         total_returns = len(returns)
         for idx_ret, ret in enumerate(returns, start=1):
             append_return(

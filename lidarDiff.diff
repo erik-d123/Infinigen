@@ -1,0 +1,153 @@
+diff --git a/lidar/lidar_config.py b/lidar/lidar_config.py
+index 8d1e8aa..c1b8f46 100644
+--- a/lidar/lidar_config.py
++++ b/lidar/lidar_config.py
+@@ -5,6 +5,9 @@
+ # Contains sensor specifications and configuration management
+ 
+ import numpy as np
++
++# Default opacity used when Principled Alpha is unlinked/unused
++DEFAULT_OPACITY: float = 0.25
+ 
+ LIDAR_PRESETS = {
+     "VLP-16": {
+@@ -65,7 +68,9 @@ class LidarConfig:
+                  secondary_min_cos: float = 0.95,
+                  ply_binary: bool = False,
+                  ):
++                 default_opacity: float = DEFAULT_OPACITY,
++                 secondary_merge_eps: float = 1e-3,
+ 
+         if preset not in LIDAR_PRESETS:
+             raise ValueError(f"Unknown LiDAR preset: {preset}. Available: {list(LIDAR_PRESETS.keys())}")
+@@ -118,6 +123,7 @@ class LidarConfig:
+         self.retro_sigma_scale = 0.3         # scales with roughness
+         self.transmission_roughness_strength = 0.5  # damp both specular and residual
+         self.alpha_non_glass_cap = 0.2       # max alpha->transmission for non-glass
++        self.default_opacity = float(default_opacity)
+ 
+         # Sensor timing and motion
+         self.rpm = rpm or preset_data["default_rpm"]
+@@ -142,6 +148,7 @@ class LidarConfig:
+         self.secondary_ray_bias = secondary_ray_bias
+         self.secondary_extinction = secondary_extinction
+         self.secondary_min_cos = secondary_min_cos
++        self.secondary_merge_eps = float(secondary_merge_eps)
+         # Backward compatibility alias
+         self.rolling_subframes = self.subframes
+         self.ply_binary = ply_binary
+@@ -165,6 +172,7 @@ class LidarConfig:
+             "retro_sigma_scale": self.retro_sigma_scale,
+             "transmission_roughness_strength": self.transmission_roughness_strength,
+             "alpha_non_glass_cap": self.alpha_non_glass_cap,
++            "default_opacity": self.default_opacity,
+             "rpm": self.rpm,
+             "continuous_spin": self.continuous_spin,
+             "rolling_shutter": self.rolling_shutter,
+@@ -182,6 +190,7 @@ class LidarConfig:
+             "secondary_ray_bias": self.secondary_ray_bias,
+             "secondary_extinction": self.secondary_extinction,
+             "secondary_min_cos": self.secondary_min_cos,
++            "secondary_merge_eps": self.secondary_merge_eps,
+             "rolling_subframes": self.subframes,
+             "ply_binary": self.ply_binary,
+         }
+diff --git a/lidar/intensity_model.py b/lidar/intensity_model.py
+index 9b4b2d4..f3f6a0e 100644
+--- a/lidar/intensity_model.py
++++ b/lidar/intensity_model.py
+@@ -6,6 +6,7 @@ from __future__ import annotations
+ import math
+ import bpy
+ from mathutils import geometry, Vector
++from lidar.lidar_config import DEFAULT_OPACITY
+ 
+ # Per-object eval/mesh cache (cleared each frame/subframe)
+ _OBJ_GEOM_CACHE: dict[int, dict] = {}
+@@ -233,7 +234,7 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
+         "roughness": 0.5,
+         "transmission": 0.0,
+         "ior": 1.45,
+-        "opacity": 1.0,
++        "opacity": DEFAULT_OPACITY,
+         "clearcoat": 0.0,
+         "clearcoat_roughness": 0.03,
+         "transmission_roughness": 0.0,
+@@ -270,7 +271,13 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
+         try:
+-            params["transmission"] = float(_safe_input(node, "Transmission", params["transmission"]))
++            params["transmission"] = float(_safe_input(node, "Transmission", params["transmission"]))
++            # Blender versions may use "Transmission Weight" for Principled v1
++            if params["transmission"] == 0.0:
++                try:
++                    params["transmission"] = float(_safe_input(node, "Transmission Weight", params["transmission"]))
++                except Exception:
++                    pass
+             try:
+                 params["transmission_roughness"] = float(_safe_input(node, "Transmission Roughness", params.get("transmission_roughness", 0.0)))
+             except Exception:
+                 params["transmission_roughness"] = params.get("transmission_roughness", 0.0)
+             try:
+                 params["ior"] = float(_safe_input(node, "IOR", params["ior"]))
+             except Exception:
+                 params["ior"] = 1.45
+             try:
+                 params["opacity"] = float(_safe_input(node, "Alpha", params["opacity"]))
+             except Exception:
+-                params["opacity"] = 1.0
++                params["opacity"] = DEFAULT_OPACITY
+@@ -327,7 +334,7 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
+         if alpha_sample is not None:
+             params["opacity"] = float(max(0.0, min(1.0, alpha_sample)))
+ 
+     # --- Derived quantities and classification ---
+@@ -393,7 +400,7 @@ def compute_intensity(props: dict, cos_i: float, R: float, cfg):
+-    opacity = float(props.get("opacity", 1.0) or 1.0)
++    opacity = float(props.get("opacity", DEFAULT_OPACITY) or DEFAULT_OPACITY)
+     alpha_trans = max(0.0, 1.0 - opacity)
+     if not is_glass_like:
+         alpha_trans = min(alpha_trans, float(getattr(cfg, "alpha_non_glass_cap", 0.2)))
+@@ -431,9 +438,8 @@ def compute_intensity(props: dict, cos_i: float, R: float, cfg):
+-    # Frosted/transmission roughness reduces both primary mirror-like return and transmitted residual
++    # Frosted/transmission roughness reduces both primary mirror-like return and transmitted residual
+     frosted_k = float(getattr(cfg, "transmission_roughness_strength", 0.5))
+     frosted_scale = max(0.0, 1.0 - frosted_k * trans_rough)
+-    if trans_frac > 0.0:
+-        specular_term *= frosted_scale
++    specular_term *= frosted_scale
+ 
+     reflectivity = max(0.0, diffuse_term + specular_term)
+     I = reflectivity / (R ** dist_p)
+diff --git a/lidar/lidar_raycast.py b/lidar/lidar_raycast.py
+index 6d2d77a..8b9f93f 100644
+--- a/lidar/lidar_raycast.py
++++ b/lidar/lidar_raycast.py
+@@ -268,6 +268,18 @@ def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, azi
+-        returns.sort(key=lambda r: r["range"])
++        returns.sort(key=lambda r: r["range"])
++        # Merge near-duplicate returns by range and cap to one secondary per primary
++        if getattr(cfg, "secondary_merge_eps", 0.0) and len(returns) > 1:
++            merged = [returns[0]]
++            for r in returns[1:]:
++                if abs(r["range"] - merged[-1]["range"]) <= cfg.secondary_merge_eps:
++                    merged[-1]["intensity"] += float(r.get("intensity", 0.0))
++                    merged[-1]["transmittance"] = float(merged[-1].get("transmittance", 1.0)) * float(r.get("transmittance", 1.0))
++                else:
++                    merged.append(r)
++            returns = merged
++        if len(returns) > 2:
++            returns = [returns[0], returns[1]]
+ 
+         total_returns = len(returns)
+         for idx_ret, ret in enumerate(returns, start=1):
+diff --git a/tests/lidar/test_lidar_sanity.py b/tests/lidar/test_lidar_sanity.py
+index 4a2b0a1..8d1192e 100644
+--- a/tests/lidar/test_lidar_sanity.py
++++ b/tests/lidar/test_lidar_sanity.py
+@@ -24,7 +24,7 @@ def test_default_opacity_values():
+     """Ensure we get sensible defaults when Alpha socket is untouched."""
+     res = lidar_debug.test_default_opacity()
+-    assert res["default_opacity"] == pytest.approx(1.0, abs=1e-6)
++    assert res["default_opacity"] == pytest.approx(0.25, rel=1e-2)
+     assert res["alpha_override"] == pytest.approx(0.25, rel=1e-2)

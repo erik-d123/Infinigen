@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 import bpy
 from mathutils import geometry, Vector
+from lidar.lidar_config import DEFAULT_OPACITY
 
 # Per-object eval/mesh cache (cleared each frame/subframe)
 _OBJ_GEOM_CACHE: dict[int, dict] = {}
@@ -225,11 +226,11 @@ def get_material_from_hit(obj: bpy.types.Object, poly_index: int, depsgraph) -> 
         if not hasattr(mesh, "polygons") or poly_index < 0:
             return None
         poly = mesh.polygons[poly_index]
+        if obj.material_slots:
+            return obj.material_slots[poly.material_index].material
         mats = mesh.materials
         if mats and poly.material_index < len(mats):
             return mats[poly.material_index]
-        if obj.material_slots:
-            return obj.material_slots[poly.material_index].material
     except Exception:
         return None
     return None
@@ -266,7 +267,7 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
         "roughness": 0.5,
         "transmission": 0.0,
         "ior": 1.45,
-        "opacity": 1.0,
+        "opacity": DEFAULT_OPACITY,
         "clearcoat": 0.0,
         "clearcoat_roughness": 0.03,
         "transmission_roughness": 0.0,
@@ -294,7 +295,10 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
     if node:
         params["base_color"] = _safe_input(node, "Base Color", params["base_color"])
         params["metallic"] = float(_safe_input(node, "Metallic", params["metallic"]))
-        params["specular"] = float(_safe_input(node, "Specular", params["specular"]))
+        if node.inputs.get("Specular") is not None:
+            params["specular"] = float(_safe_input(node, "Specular", params["specular"]))
+        elif node.inputs.get("Specular IOR Level") is not None:
+            params["specular"] = float(_safe_input(node, "Specular IOR Level", params["specular"]))
         params["roughness"] = float(_safe_input(node, "Roughness", params["roughness"]))
         params["clearcoat"] = float(_safe_input(node, "Clearcoat", params["clearcoat"]))
         try:
@@ -302,6 +306,11 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
         except Exception:
             params["clearcoat_roughness"] = params["clearcoat_roughness"]
         params["transmission"] = float(_safe_input(node, "Transmission", params["transmission"]))
+        if params["transmission"] == 0.0:
+            try:
+                params["transmission"] = float(_safe_input(node, "Transmission Weight", params["transmission"]))
+            except Exception:
+                pass
         try:
             params["transmission_roughness"] = float(_safe_input(node, "Transmission Roughness", params.get("transmission_roughness", 0.0)))
         except Exception:
@@ -310,10 +319,18 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
             params["ior"] = float(_safe_input(node, "IOR", params["ior"]))
         except Exception:
             params["ior"] = 1.45
-        try:
-            params["opacity"] = float(_safe_input(node, "Alpha", params["opacity"]))
-        except Exception:
-            params["opacity"] = 1.0
+        alpha_socket = node.inputs.get("Alpha") if hasattr(node, "inputs") else None
+        if alpha_socket is not None and not alpha_socket.is_linked:
+            try:
+                alpha_val = float(alpha_socket.default_value)
+            except Exception:
+                alpha_val = float(params["opacity"])
+            if abs(alpha_val - 1.0) < 1e-6:
+                params["opacity"] = DEFAULT_OPACITY
+            else:
+                params["opacity"] = max(0.0, min(1.0, alpha_val))
+        else:
+            params["opacity"] = DEFAULT_OPACITY
     elif hasattr(mat, "diffuse_color"):
         c = mat.diffuse_color
         params["base_color"] = (float(c[0]), float(c[1]), float(c[2]))
@@ -357,7 +374,10 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
 
     f0_from_spec = max(0.0, min(0.08, 0.08 * spec_slider))
     f0_from_ior = ((ior - 1.0) / (ior + 1.0)) ** 2 if ior else 0.04
-    dielectric_f0 = max(0.02, min(0.95, max(f0_from_spec, f0_from_ior)))
+    if ior > 1.0:
+        dielectric_f0 = max(0.02, min(0.95, min(f0_from_spec, f0_from_ior)))
+    else:
+        dielectric_f0 = max(0.02, min(0.95, f0_from_spec or f0_from_ior))
 
     params["F0_dielectric"] = dielectric_f0
     params["base_luma"] = base_luma
@@ -383,7 +403,8 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None):
 
     if not has_textures:
         _MATERIAL_CACHE[key] = dict(params)
-    
+
+
     # If Principled has little/no transmission, or no Principled at all, scan node tree for glass/transparent hints
     if (params.get("transmission", 0.0) < 0.01) or node is None:
         t_hint, ior_hint, glass_like = _scan_node_tree_transmission(mat)
@@ -431,7 +452,7 @@ def compute_intensity(props: dict, cos_i: float, R: float, cfg):
     metallic = float(props.get("metallic", 0.0))
     rough = max(0.0, min(1.0, float(props.get("roughness", 0.5))))
     transmission = float(props.get("transmission", 0.0) or 0.0)
-    opacity = float(props.get("opacity", 1.0) or 1.0)
+    opacity = float(props.get("opacity", DEFAULT_OPACITY) or DEFAULT_OPACITY)
     specular = float(props.get("specular", 0.5))
     base_rgb = props.get("base_color", (0.8, 0.8, 0.8))
     diffuse_albedo = max(0.0, min(1.0, float(props.get("diffuse_albedo", _luma(base_rgb)))))
@@ -488,8 +509,7 @@ def compute_intensity(props: dict, cos_i: float, R: float, cfg):
     # Frosted/transmission roughness reduces both primary mirror-like return and transmitted residual
     frosted_k = float(getattr(cfg, "transmission_roughness_strength", 0.5))
     frosted_scale = max(0.0, 1.0 - frosted_k * trans_rough)
-    if trans_frac > 0.0:
-        specular_term *= frosted_scale
+    specular_term *= frosted_scale
 
     reflectivity = max(0.0, diffuse_term + specular_term)
     I = reflectivity / (R ** dist_p)

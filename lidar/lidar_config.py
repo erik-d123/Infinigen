@@ -6,6 +6,9 @@
 
 import numpy as np
 
+# Default opacity used when Principled alpha is unset
+DEFAULT_OPACITY: float = 0.25
+
 LIDAR_PRESETS = {
     "VLP-16": {
         "num_elevation": 16,
@@ -79,6 +82,8 @@ class LidarConfig:
                  secondary_extinction: float = 0.0,
                  secondary_min_cos: float = 0.95,
                  ply_binary: bool = False,
+                 default_opacity: float = DEFAULT_OPACITY,
+                 secondary_merge_eps: float = 1e-3,
                  ):
 
         if preset not in LIDAR_PRESETS:
@@ -133,6 +138,7 @@ class LidarConfig:
         self.retro_sigma_scale = 0.3         # scales with roughness
         self.transmission_roughness_strength = 0.5  # damp both specular and residual
         self.alpha_non_glass_cap = 0.2       # max alpha->transmission for non-glass
+        self.default_opacity = float(default_opacity)
 
         # Sensor timing and motion
         self.rpm = rpm or preset_data["default_rpm"]
@@ -157,6 +163,7 @@ class LidarConfig:
         self.secondary_ray_bias = secondary_ray_bias
         self.secondary_extinction = secondary_extinction
         self.secondary_min_cos = secondary_min_cos
+        self.secondary_merge_eps = float(secondary_merge_eps)
         # Backward compatibility alias
         self.rolling_subframes = self.subframes
         self.ply_binary = ply_binary
@@ -180,6 +187,7 @@ class LidarConfig:
             "retro_sigma_scale": self.retro_sigma_scale,
             "transmission_roughness_strength": self.transmission_roughness_strength,
             "alpha_non_glass_cap": self.alpha_non_glass_cap,
+            "default_opacity": self.default_opacity,
             "rpm": self.rpm,
             "continuous_spin": self.continuous_spin,
             "rolling_shutter": self.rolling_shutter,
@@ -196,6 +204,7 @@ class LidarConfig:
             "secondary_ray_bias": self.secondary_ray_bias,
             "secondary_extinction": self.secondary_extinction,
             "secondary_min_cos": self.secondary_min_cos,
+            "secondary_merge_eps": self.secondary_merge_eps,
             "rolling_subframes": self.subframes,
             "ply_binary": self.ply_binary,
         }
