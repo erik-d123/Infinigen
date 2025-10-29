@@ -59,12 +59,12 @@ def test_mirror_vs_diffuse_and_angle():
     plane.data.materials.clear()
     plane.data.materials.append(mirror)
     props_m = extract_material_properties(plane, 0, depsgraph)
-    I_m, _ = compute_intensity(props_m, cos_i=1.0, R=2.0, cfg=cfg)
+    I_m, _, _, _, _ = compute_intensity(props_m, cos_i=1.0, R=2.0, cfg=cfg)
     plane.data.materials[0] = diffuse
     bpy.context.view_layer.update()
     props_d = extract_material_properties(plane, 0, depsgraph)
-    I_d, _ = compute_intensity(props_d, cos_i=1.0, R=2.0, cfg=cfg)
+    I_d, _, _, _, _ = compute_intensity(props_d, cos_i=1.0, R=2.0, cfg=cfg)
     assert I_m > I_d
-    I_d_shallow, _ = compute_intensity(props_d, cos_i=math.cos(math.radians(60.0)), R=2.0, cfg=cfg)
-    I_d_normal, _ = compute_intensity(props_d, cos_i=1.0, R=2.0, cfg=cfg)
+    I_d_shallow, _, _, _, _ = compute_intensity(props_d, cos_i=math.cos(math.radians(60.0)), R=2.0, cfg=cfg)
+    I_d_normal, _, _, _, _ = compute_intensity(props_d, cos_i=1.0, R=2.0, cfg=cfg)
     assert I_d_shallow < I_d_normal

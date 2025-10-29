@@ -59,7 +59,7 @@ echo "Data generation complete!"
 echo "Saved to: $OUTPUT_DIR"
 echo
 echo "View with:"
-echo "  python lidar/lidar_viewer.py \"$OUTPUT_DIR\" --color intensity           # Intensity coloring"
+echo "  python lidar/lidar_viewer.py \"$OUTPUT_DIR\" --color intensity_heat           # Intensity coloring"
 echo "  python lidar/lidar_viewer.py \"$OUTPUT_DIR\" --color ring                 # Ring (elevation) coloring"
 echo "  python lidar/lidar_viewer.py \"$OUTPUT_DIR\" --camera-view                # LiDAR POV (uses poses_tum.txt when present)"
 echo "========================================"

@@ -1,213 +1,87 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Indoor LiDAR configuration with presets and derived defaults
 
-# LiDAR sensor configuration and presets module
-# Contains sensor specifications and configuration management
+from __future__ import annotations
+from dataclasses import dataclass, asdict, field
+from typing import Dict, Any, Optional
 
-import numpy as np
+# Alpha fallback when Principled Alpha is unset
+DEFAULT_OPACITY: float = 1.0
 
-# Default opacity used when Principled alpha is unset
-DEFAULT_OPACITY: float = 0.25
-
-LIDAR_PRESETS = {
-    "VLP-16": {
-        "num_elevation": 16,
-        "elevation_angles_deg": [
-            -15.0,  1.0,  -13.0,  3.0,  -11.0,  5.0,  -9.0,   7.0,
-             -7.0,  9.0,   -5.0, 11.0,  -3.0, 13.0,  -1.0,  15.0
-        ],
-        "min_range": 0.9,         # Manufacturer spec: 0.9m
-        "max_range": 100.0,
-        "range_accuracy": 0.03,    # ±3cm
-        
-        "default_rpm": 600.0,      # 10 Hz
-        "policy": "velodyne",
-        "pps": 300000,            # Points per second
-    },
-    "HDL-32E": {
-        "num_elevation": 32,
-        "elevation_angles_deg": [
-            -30.67, -9.33, -29.33, -8.00, -28.00, -6.67, -26.67, -5.33,
-            -25.33, -4.00, -24.00, -2.67, -22.67, -1.33, -21.33,  0.00,
-            -20.00,  1.33, -18.67,  2.67, -17.33,  4.00, -16.00,  5.33,
-            -14.67,  6.67, -13.33,  8.00, -12.00,  9.33, -10.67, 10.67
-        ],
-        "min_range": 1.0,         # Manufacturer spec: 1.0m
-        "max_range": 100.0,
-        "range_accuracy": 0.02,    # ±2cm
-        
-        "default_rpm": 600.0,      # 10 Hz
-        "policy": "velodyne",
-        "pps": 700000,            # Points per second
-    },
-    "HDL-64E": {
-        "num_elevation": 64,
-        "elevation_angles_deg": [float(x) for x in np.linspace(2.0, -24.9, 64)],
-        "min_range": 0.9,         # Manufacturer spec: 0.9m
-        "max_range": 120.0,
-        "range_accuracy": 0.02,    # ±2cm
-        
-        "default_rpm": 600.0,      # 10 Hz
-        "policy": "velodyne",
-        "pps": 1300000,           # Points per second
-    },
-    "OS1-128": {
-        "num_elevation": 128,
-        "vfov_deg": 42.4,         # ±21.2°
-        "min_range": 0.5,         # Manufacturer spec: 0.5m
-        "max_range": 120.0,
-        "range_accuracy": 0.02,    # ±2cm
-        
-        "default_rpm": 1200.0,     # 20 Hz
-        "policy": "ouster",
-        "columns_per_rev": 2048,   # Fixed columns per revolution
-    }
+# Sensor presets tuned for indoor scenes (rings, max_range in meters)
+LIDAR_PRESETS: Dict[str, Dict[str, float]] = {
+    "VLP-16":   {"rings": 16,  "max_range": 100.0},
+    "HDL-32E":  {"rings": 32,  "max_range": 120.0},
+    "HDL-64E":  {"rings": 64,  "max_range": 120.0},
+    "OS1-128":  {"rings": 128, "max_range": 120.0},
 }
 
+@dataclass
 class LidarConfig:
-    def __init__(self,
-                 preset: str = "VLP-16",
-                 force_azimuth_steps: int = None,
-                 save_ply: bool = True,
-                 auto_expose: bool = False,
-                 global_scale: float = 1.0,
-                 rpm: float = None,
-                 continuous_spin: bool = True,
-                 rolling_shutter: bool = True,
-                 subframes: int = 1,
-                 ply_frame: str = "sensor",  # {camera,sensor,world}
-                 enable_secondary: bool = False,
-                 secondary_min_residual: float = 0.05,
-                 secondary_ray_bias: float = 5e-4,
-                 secondary_extinction: float = 0.0,
-                 secondary_min_cos: float = 0.95,
-                 ply_binary: bool = False,
-                 default_opacity: float = DEFAULT_OPACITY,
-                 secondary_merge_eps: float = 1e-3,
-                 ):
+    # High-level
+    preset: str = "VLP-16"
+    force_azimuth_steps: Optional[int] = None           # overrides azimuth columns if set
+    ply_frame: str = "sensor"                           # {"sensor","camera","world"}
+    save_ply: bool = True
+    ply_binary: bool = False
 
-        if preset not in LIDAR_PRESETS:
-            raise ValueError(f"Unknown LiDAR preset: {preset}. Available: {list(LIDAR_PRESETS.keys())}")
+    # Radiometry and exposure
+    distance_power: float = 2.0                         # intensity ∝ 1 / r^p
+    auto_expose: bool = False
+    global_scale: float = 1.0                           # used when auto_expose=False
+    target_percentile: float = 95.0                     # auto exposure
+    target_intensity: float = 200.0                     # 8-bit target
+    default_opacity: float = DEFAULT_OPACITY            # alpha-as-coverage fallback
+    prefer_ior: bool = True                             # derive F0 from IOR when present
 
-        preset_data = LIDAR_PRESETS[preset]
-        
-        # Geometry configuration from preset
-        self.preset = preset
-        self.num_elevation = preset_data["num_elevation"]
-        
-        # Handle OS1-128 special case - generate elevation angles from vfov
-        if preset == "OS1-128":
-            vfov_deg = preset_data["vfov_deg"]
-            half_vfov = vfov_deg / 2.0
-            self.elevation_angles_deg = list(np.linspace(half_vfov, -half_vfov, self.num_elevation))
-        else:
-            self.elevation_angles_deg = preset_data["elevation_angles_deg"]
-        
-        # Determine azimuth steps based on policy
-        policy = preset_data["policy"]
-        self.rpm = rpm or preset_data["default_rpm"]
-        
-        if force_azimuth_steps is not None:
-            # Override policy with explicit azimuth steps if provided
-            self.num_azimuth = force_azimuth_steps
-        elif policy == "velodyne":
-            # Velodyne: calculate from points-per-second, channel count, and rotation rate
-            pps = preset_data["pps"]
-            rps = self.rpm / 60.0  # Revolutions per second
-            self.num_azimuth = int(round(pps / (self.num_elevation * rps)))
-        elif policy == "ouster":
-            # Ouster: fixed columns per revolution, independent of RPM
-            self.num_azimuth = preset_data["columns_per_rev"]
-        else:
-            raise ValueError(f"Unknown LiDAR policy: {policy}")
+    # Ranges and angular dropout
+    min_range: float = 0.05                             # indoor close hits
+    max_range: float = 100.0                            # overridden by preset
+    grazing_dropout_cos_thresh: float = 0.05            # skip shallow hits
 
-        # Range limits: indoor-only usage → allow very close hits
-        self.min_range = 0.05  # meters; low but avoids self-intersections
-        self.max_range = preset_data["max_range"]
+    # Secondary return controls (pass-through)
+    enable_secondary: bool = False
+    secondary_min_residual: float = 0.02                # spawn threshold on residual
+    secondary_ray_bias: float = 5e-4                    # meters; also aliased as 'hit_offset'
+    secondary_min_cos: float = 0.95                     # ensure near-normal for pass-through
+    secondary_merge_eps: float = 0.0                    # meters; merge close returns
 
-        # Intensity model parameters (indoor-friendly defaults)
-        self.distance_power = 2.0
-        self.target_percentile = 95
-        self.target_intensity = 200
-        self.auto_expose = auto_expose
-        self.global_scale = global_scale
-        # Atmospheric attenuation disabled for indoor usage
-        self.beta_atm = 0.0
-        # Intensity tuning knobs
-        self.retro_sigma_min = 0.05          # radians
-        self.retro_sigma_scale = 0.3         # scales with roughness
-        self.transmission_roughness_strength = 0.5  # damp both specular and residual
-        self.alpha_non_glass_cap = 0.2       # max alpha->transmission for non-glass
-        self.default_opacity = float(default_opacity)
+    # Sensor layout
+    rings: int = 16                                     # overridden by preset
+    azimuth_steps: int = 1800                           # default column count
 
-        # Sensor timing and motion
-        self.rpm = rpm or preset_data["default_rpm"]
-        self.continuous_spin = continuous_spin
-        self.rolling_shutter = rolling_shutter
-        self.subframes = max(1, int(subframes))
+    # Internal/derived store for arbitrary extras
+    extras: Dict[str, Any] = field(default_factory=dict)
 
-        # Output options (kept minimal)
-        self.save_ply = save_ply
-        self.ply_frame = ply_frame
+    def __post_init__(self):
+        p = LIDAR_PRESETS.get(self.preset)
+        if p:
+            self.rings = int(p["rings"])
+            self.max_range = float(p["max_range"])
+        if self.force_azimuth_steps is not None:
+            self.azimuth_steps = int(self.force_azimuth_steps)
+        self.default_opacity = float(min(1.0, max(0.0, self.default_opacity)))
+        self.grazing_dropout_cos_thresh = float(min(1.0, max(0.0, self.grazing_dropout_cos_thresh)))
+        self.min_range = float(max(1e-4, self.min_range))
+        self.max_range = float(max(self.min_range + 1e-3, self.max_range))
+        self.rings = int(max(1, self.rings))
+        self.azimuth_steps = int(max(8, self.azimuth_steps))
 
-        # Noise and realism parameters (based on preset accuracy)
-        self.range_noise_a = preset_data["range_accuracy"]  # Base range noise from spec
-        self.range_noise_b = 0.001         # Range-proportional noise  
-        self.intensity_jitter_std = 0.02   # Multiplicative intensity jitter
-        # Return as much as possible for indoor scans
-        self.dropout_prob = 0.0            # No random dropout by default
-        self.grazing_dropout_cos_thresh = 0.05
-        # Secondary/pass-through rays
-        self.enable_secondary = enable_secondary
-        self.secondary_min_residual = secondary_min_residual
-        self.secondary_ray_bias = secondary_ray_bias
-        self.secondary_extinction = secondary_extinction
-        self.secondary_min_cos = secondary_min_cos
-        self.secondary_merge_eps = float(secondary_merge_eps)
-        # Backward compatibility alias
-        self.rolling_subframes = self.subframes
-        self.ply_binary = ply_binary
+    def hit_offset(self) -> float:
+        # Backward-compatible alias used by raycaster
+        return self.secondary_ray_bias
 
-    def to_dict(self):
-        # Convert configuration to serializable dict
-        return {
-            "preset": self.preset,
-            "num_elevation": self.num_elevation,
-            "num_azimuth": self.num_azimuth,
-            "elevation_angles_deg": self.elevation_angles_deg,
-            "min_range": self.min_range,
-            "max_range": self.max_range,
-            "distance_power": self.distance_power,
-            "target_percentile": self.target_percentile,
-            "target_intensity": self.target_intensity,
-            "auto_expose": self.auto_expose,
-            "global_scale": self.global_scale,
-            "beta_atm": self.beta_atm,
-            "retro_sigma_min": self.retro_sigma_min,
-            "retro_sigma_scale": self.retro_sigma_scale,
-            "transmission_roughness_strength": self.transmission_roughness_strength,
-            "alpha_non_glass_cap": self.alpha_non_glass_cap,
-            "default_opacity": self.default_opacity,
-            "rpm": self.rpm,
-            "continuous_spin": self.continuous_spin,
-            "rolling_shutter": self.rolling_shutter,
-            "subframes": self.subframes,
-            "save_ply": self.save_ply,
-            "ply_frame": self.ply_frame,
-            "range_noise_a": self.range_noise_a,
-            "range_noise_b": self.range_noise_b,
-            "intensity_jitter_std": self.intensity_jitter_std,
-            "dropout_prob": self.dropout_prob,
-            "grazing_dropout_cos_thresh": self.grazing_dropout_cos_thresh,
-            "enable_secondary": self.enable_secondary,
-            "secondary_min_residual": self.secondary_min_residual,
-            "secondary_ray_bias": self.secondary_ray_bias,
-            "secondary_extinction": self.secondary_extinction,
-            "secondary_min_cos": self.secondary_min_cos,
-            "secondary_merge_eps": self.secondary_merge_eps,
-            "rolling_subframes": self.subframes,
-            "ply_binary": self.ply_binary,
-        }
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        # keep a clean surface in saved JSON
+        d.pop("extras", None)
+        return d
 
-    def __str__(self):
-        return f"{self.preset} indoor: {self.num_elevation}x{self.num_azimuth}, rpm={self.rpm}, rolling={self.rolling_shutter}, spin={self.continuous_spin}"
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "LidarConfig":
+        # Allow unknown keys via extras
+        known = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
+        extras = {k: v for k, v in d.items() if k not in cls.__dataclass_fields__}
+        cfg = cls(**known)
+        cfg.extras.update(extras)
+        return cfg

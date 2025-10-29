@@ -1,159 +1,267 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# PLY writer and frame-transform helpers for indoor LiDAR
 
-# LiDAR I/O module
-# Handles PLY file output and coordinate transformations
+from __future__ import annotations
+from pathlib import Path
+from typing import Dict, Tuple, Iterable, Optional
 
-import os
+import io
+import struct
 import numpy as np
-from mathutils import Matrix, Vector
 
-def _matrix_to_np3x3(m: Matrix) -> np.ndarray:
-    # Convert Blender Matrix to 3x3 numpy array
-    return np.array([[m[0][0], m[0][1], m[0][2]],
-                     [m[1][0], m[1][1], m[1][2]],
-                     [m[2][0], m[2][1], m[2][2]]], dtype=np.float32)
+try:
+    import bpy  # only needed by world_to_frame_matrix
+except Exception:
+    bpy = None
 
-def world_to_frame_matrix(cam_obj, sensor_R: Matrix, frame: str) -> Matrix:
-    # Calculate transformation matrix for output coordinate frame
-    if frame == 'world':
-        return Matrix.Identity(4)
-    
-    cam_inv = cam_obj.matrix_world.inverted()
-    if frame == 'camera':
-        return cam_inv
-    elif frame == 'sensor':
-        # world->sensor = (sensor_R^{-1}) * (world->camera)
-        R_sc = sensor_R.inverted().to_4x4()
-        return R_sc @ cam_inv
-    else:
-        raise ValueError("ply_frame must be one of {'camera','sensor','world'}")
 
-# PLY file output
+# --------------------------- transforms ---------------------------
 
-def save_ply(output_dir, frame, xform_world_to_out: Matrix, data, cfg, *, binary: bool = None):
-    os.makedirs(output_dir, exist_ok=True)
-    path = os.path.join(output_dir, f"lidar_frame_{frame:04d}.ply")
+def world_to_frame_matrix(camera_obj, frame: str = "sensor") -> np.ndarray:
+    """
+    Return 4x4 transform 'world -> frame' for {world|camera|sensor}.
+    Sensor frame: +X forward, +Y left, +Z up. Blender camera: +X right, +Y up, -Z forward.
+    """
+    if frame == "world":
+        return np.eye(4, dtype=float)
 
-    pts_out = np.array([(xform_world_to_out @ Vector(p))[:] for p in data["points_world"]], dtype=np.float32)
-    n = len(pts_out)
+    # world -> camera
+    R_wc = np.array(camera_obj.matrix_world.to_3x3(), dtype=float)
+    t_wc = np.array(camera_obj.matrix_world.translation, dtype=float)
+    R_cw = R_wc.T
+    t_cw = -R_cw @ t_wc
+    Twc_inv = np.eye(4, dtype=float)
+    Twc_inv[:3, :3] = R_cw
+    Twc_inv[:3, 3] = t_cw
 
-    has_ci = "cos_incidence" in data
-    has_mc = "mat_class" in data
-    has_power = "return_power" in data
-    has_range = "range_m" in data
-    trans_data = None
-    if "transmittance" in data:
-        trans_data = np.asarray(data["transmittance"], dtype=np.float32)
-    elif "exposure_scale" in data:
-        trans_data = np.asarray(data["exposure_scale"], dtype=np.float32)
-    has_trans = trans_data is not None
-    has_normals = "normals_world" in data and n == len(data["normals_world"])
-    if has_normals:
-        rot = _matrix_to_np3x3(xform_world_to_out.to_3x3())
-        normals_out = (rot @ np.asarray(data["normals_world"], dtype=np.float32).T).T
+    if frame == "camera":
+        return Twc_inv
 
-    if binary is None:
-        binary = getattr(cfg, "binary_ply", False)
+    # camera <- sensor rotation (R_cs)
+    R_cs = np.array(
+        [
+            [0.0, -1.0,  0.0],  # cam X <- -Y_sensor
+            [0.0,  0.0,  1.0],  # cam Y <- +Z_sensor
+            [-1.0, 0.0,  0.0],  # cam Z <- -X_sensor
+        ],
+        dtype=float,
+    )
+    # world -> sensor = (camera -> sensor) @ (world -> camera)
+    R_sc = R_cs.T
+    Tcw = Twc_inv
+    Tsw = np.eye(4, dtype=float)
+    Tsw[:3, :3] = R_sc @ Tcw[:3, :3]
+    Tsw[:3, 3] = (R_sc @ Tcw[:3, 3])
+    return Tsw
 
-    if binary:
-        import struct
-        header_lines = [
-            "ply",
-            "format binary_little_endian 1.0",
-            f"comment Lidar frame {frame}",
-            f"element vertex {n}",
-            "property float x",
-            "property float y",
-            "property float z",
-            "property uchar intensity",
-            "property ushort ring",
-            "property float azimuth",
-            "property float elevation",
-            "property float time_offset",
-            "property uchar return_id",
-            "property uchar num_returns",
-        ]
-        if has_range:
-            header_lines.append("property float range_m")
-        if has_ci:
-            header_lines.append("property float cos_incidence")
-        if has_mc:
-            header_lines.append("property uchar mat_class")
-        if has_power:
-            header_lines.append("property float return_power")
-        if has_trans:
-            header_lines.append("property float transmittance")
-        if has_normals:
-            header_lines.extend(["property float nx", "property float ny", "property float nz"])
-        header_lines.append("end_header\n")
 
-        with open(path, "wb") as f:
-            for line in header_lines:
-                f.write((line + "\n").encode("ascii"))
-            for i in range(n):
-                f.write(struct.pack("<fff", float(pts_out[i, 0]), float(pts_out[i, 1]), float(pts_out[i, 2])))
-                f.write(struct.pack("<B", int(data["intensities_u8"][i])))
-                f.write(struct.pack("<H", int(data["ring_ids"][i])))
-                f.write(struct.pack("<fff", float(data["azimuth_rad"][i]), float(data["elevation_rad"][i]), float(data["time_offset"][i])))
-                f.write(struct.pack("<B", int(data["return_id"][i])))
-                f.write(struct.pack("<B", int(data["num_returns"][i])))
-                if has_range:
-                    f.write(struct.pack("<f", float(data["range_m"][i])))
-                if has_ci:
-                    f.write(struct.pack("<f", float(data["cos_incidence"][i])))
-                if has_mc:
-                    f.write(struct.pack("<B", int(data["mat_class"][i])))
-                if has_power:
-                    f.write(struct.pack("<f", float(data["return_power"][i])))
-                if has_trans:
-                    f.write(struct.pack("<f", float(trans_data[i])))
-                if has_normals:
-                    nx, ny, nz = normals_out[i]
-                    f.write(struct.pack("<fff", float(nx), float(ny), float(nz)))
+# ----------------------------- PLY I/O -----------------------------
+
+# Fixed base order; append optional fields if present.
+_BASE_LAYOUT = [
+    ("x", "f4"),
+    ("y", "f4"),
+    ("z", "f4"),
+    ("intensity", "u1"),
+    ("ring", "u2"),
+    ("azimuth", "f4"),
+    ("elevation", "f4"),
+    ("return_id", "u1"),
+    ("num_returns", "u1"),
+]
+_OPT_FIELDS = [
+    ("range_m", "f4"),
+    ("cos_incidence", "f4"),
+    ("mat_class", "u1"),
+    ("reflectivity", "f4"),
+    ("transmittance", "f4"),
+    # normals written if provided as ("normals", Nx3) or ("nx","ny","nz")
+]
+
+
+def _coerce_col(data: Dict, key: str, dtype: str, N: int) -> Optional[np.ndarray]:
+    if key not in data:
+        return None
+    arr = np.asarray(data[key])
+    if arr.ndim != 1 or arr.shape[0] != N:
+        raise ValueError(f"{key}: expected shape ({N},), got {arr.shape}")
+    return arr.astype(dtype, copy=False)
+
+
+def _coerce_points(pts) -> np.ndarray:
+    P = np.asarray(pts)
+    if P.ndim != 2 or P.shape[1] != 3:
+        raise ValueError(f"points must be (N,3), got {P.shape}")
+    return P.astype("f4", copy=False)
+
+
+def _detect_normals(data: Dict, N: int) -> Optional[np.ndarray]:
+    if "normals" in data:
+        n = np.asarray(data["normals"])
+        if n.ndim != 2 or n.shape != (N, 3):
+            raise ValueError(f"normals must be (N,3), got {n.shape}")
+        return n.astype("f4", copy=False)
+    # legacy triplets
+    have = all(k in data for k in ("nx", "ny", "nz"))
+    if have:
+        nx = np.asarray(data["nx"]).astype("f4", copy=False)
+        ny = np.asarray(data["ny"]).astype("f4", copy=False)
+        nz = np.asarray(data["nz"]).astype("f4", copy=False)
+        for a in (nx, ny, nz):
+            if a.ndim != 1 or a.shape[0] != N:
+                raise ValueError("nx/ny/nz must be (N,)")
+        return np.stack([nx, ny, nz], axis=1)
+    return None
+
+
+def _build_header(N: int, have: Dict[str, bool], have_normals: bool, binary: bool) -> str:
+    fmt = "binary_little_endian 1.0" if binary else "ascii 1.0"
+    lines = [
+        "ply",
+        f"format {fmt}",
+        f"element vertex {N}",
+    ]
+    # base props
+    lines += [
+        "property float x",
+        "property float y",
+        "property float z",
+        "property uchar intensity",
+        "property ushort ring",
+        "property float azimuth",
+        "property float elevation",
+        "property uchar return_id",
+        "property uchar num_returns",
+    ]
+    # optional props in canonical order
+    if have.get("range_m"):        lines.append("property float range_m")
+    if have.get("cos_incidence"):  lines.append("property float cos_incidence")
+    if have.get("mat_class"):      lines.append("property uchar mat_class")
+    if have.get("reflectivity"):   lines.append("property float reflectivity")
+    if have.get("transmittance"):  lines.append("property float transmittance")
+    if have_normals:
+        lines += ["property float nx", "property float ny", "property float nz"]
+    lines.append("end_header")
+    return "\n".join(lines) + "\n"
+
+
+def _stack_record_array(data: Dict) -> Tuple[np.ndarray, Dict[str, bool], Optional[np.ndarray]]:
+    P = _coerce_points(data["points"])
+    N = P.shape[0]
+
+    cols = [P[:, 0], P[:, 1], P[:, 2]]
+
+    # base
+    arr=_coerce_col(data,"intensity","u1",N)
+    intensity=arr if arr is not None else np.zeros(N,"u1")
+    arr=_coerce_col(data,"ring","u2",N)
+    ring=arr if arr is not None else np.zeros(N,"u2")
+    arr=_coerce_col(data,"azimuth","f4",N)
+    az=arr if arr is not None else np.zeros(N,"f4")
+    arr=_coerce_col(data,"elevation","f4",N)
+    el=arr if arr is not None else np.zeros(N,"f4")
+    arr=_coerce_col(data,"return_id","u1",N)
+    rid=arr if arr is not None else np.ones(N,"u1")
+    arr=_coerce_col(data,"num_returns","u1",N)
+    nret=arr if arr is not None else np.ones(N,"u1")
+
+    cols += [intensity, ring, az, el, rid, nret]
+
+    # optionals
+    have = {}
+    for k, dt in _OPT_FIELDS:
+        arr_opt = _coerce_col(data, k, dt, N)
+        have[k] = arr_opt is not None
+        if arr_opt is not None:
+            cols.append(arr_opt)
+
+    normals = _detect_normals(data, N)
+    if normals is not None:
+        cols += [normals[:, 0], normals[:, 1], normals[:, 2]]
+
+    rec = np.column_stack(cols)
+    return rec, have, normals
+
+
+def save_ply(path: str | Path, data: Dict[str, np.ndarray], binary: bool = False) -> None:
+    """
+    Write a PLY with fields described by the LiDAR pipeline.
+    Required: data['points'] (N,3)
+    Optional: intensity(u1), ring(u2), azimuth(f4), elevation(f4), return_id(u1), num_returns(u1),
+              range_m(f4), cos_incidence(f4), mat_class(u1), reflectivity(f4), transmittance(f4),
+              normals (N,3) or nx/ny/nz (f4).
+    """
+    path = Path(path)
+    if "points" not in data:
+        raise ValueError("save_ply: 'points' (N,3) array is required")
+
+    rec, have, normals = _stack_record_array(data)
+    N = rec.shape[0]
+    header = _build_header(N, have, normals is not None, binary)
+
+    if not binary:
+        # ASCII writer
+        with path.open("w", encoding="utf-8") as fh:
+            fh.write(header)
+            # Write rows with exact number of columns
+            for row in rec:
+                # cast to python types to avoid numpy repr noise
+                out = []
+                # x,y,z floats
+                out += [f"{float(row[0]):.8f}", f"{float(row[1]):.8f}", f"{float(row[2]):.8f}"]
+                # intensity u8, ring u16
+                out += [str(int(row[3])), str(int(row[4]))]
+                # azimuth, elevation
+                out += [f"{float(row[5]):.8f}", f"{float(row[6]):.8f}"]
+                # return_id, num_returns
+                out += [str(int(row[7])), str(int(row[8]))]
+                # remaining columns as floats/ints as present
+                for v in row[9:]:
+                    # detect integer columns by close-to-integer dtype in layout decision
+                    out.append(str(float(v)) if isinstance(v, float) or np.issubdtype(type(v), np.floating) else str(int(v)))
+                fh.write(" ".join(out) + "\n")
         return
 
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("ply\n")
-        f.write("format ascii 1.0\n")
-        f.write(f"comment Lidar frame {frame}\n")
-        f.write(f"element vertex {n}\n")
-        f.write("property float x\nproperty float y\nproperty float z\n")
-        f.write("property uchar intensity\nproperty ushort ring\n")
-        f.write("property float azimuth\nproperty float elevation\nproperty float time_offset\n")
-        f.write("property uchar return_id\nproperty uchar num_returns\n")
-        if has_range:
-            f.write("property float range_m\n")
-        if has_ci:
-            f.write("property float cos_incidence\n")
-        if has_mc:
-            f.write("property uchar mat_class\n")
-        if has_power:
-            f.write("property float return_power\n")
-        if has_trans:
-            f.write("property float transmittance\n")
-        if has_normals:
-            f.write("property float nx\nproperty float ny\nproperty float nz\n")
-        f.write("end_header\n")
+    # Binary little-endian
+    with path.open("wb") as fh:
+        fh.write(header.encode("ascii"))
+        # Build per-row struct format based on actual columns present
+        fmt = "<"  # little-endian
+        # x,y,z
+        fmt += "fff"
+        # intensity(u1), ring(u2)
+        fmt += "BH"
+        # azimuth, elevation
+        fmt += "ff"
+        # return_id, num_returns
+        fmt += "BB"
+        # optionals in canonical order
+        if have.get("range_m"):        fmt += "f"
+        if have.get("cos_incidence"):  fmt += "f"
+        if have.get("mat_class"):      fmt += "B"
+        if have.get("reflectivity"):   fmt += "f"
+        if have.get("transmittance"):  fmt += "f"
+        if normals is not None:        fmt += "fff"
 
-        for i in range(n):
-            line = (
-                f"{pts_out[i,0]:.6f} {pts_out[i,1]:.6f} {pts_out[i,2]:.6f} "
-                f"{int(data['intensities_u8'][i])} {int(data['ring_ids'][i])} "
-                f"{data['azimuth_rad'][i]:.6f} {data['elevation_rad'][i]:.6f} {data['time_offset'][i]:.6f} "
-                f"{int(data['return_id'][i])} {int(data['num_returns'][i])}"
-            )
-            if has_range:
-                line += f" {data['range_m'][i]:.6f}"
-            if has_ci:
-                line += f" {data['cos_incidence'][i]:.6f}"
-            if has_mc:
-                line += f" {int(data['mat_class'][i])}"
-            if has_power:
-                line += f" {data['return_power'][i]:.6f}"
-            if has_trans:
-                line += f" {trans_data[i]:.6f}"
-            if has_normals:
-                nx, ny, nz = normals_out[i]
-                line += f" {nx:.6f} {ny:.6f} {nz:.6f}"
-            f.write(line + "\n")
+        pack = struct.Struct(fmt).pack
+        # Iterate rows; map types to python scalars
+        idxs = list(range(rec.shape[1]))
+        for row in rec:
+            vals = []
+            # x,y,z
+            vals += [float(row[0]), float(row[1]), float(row[2])]
+            # intensity, ring
+            vals += [int(row[3]) & 0xFF, int(row[4]) & 0xFFFF]
+            # azimuth, elevation
+            vals += [float(row[5]), float(row[6])]
+            # return_id, num_returns
+            vals += [int(row[7]) & 0xFF, int(row[8]) & 0xFF]
+            # optionals
+            c = 9
+            if have.get("range_m"):        vals.append(float(row[c])); c += 1
+            if have.get("cos_incidence"):  vals.append(float(row[c])); c += 1
+            if have.get("mat_class"):      vals.append(int(row[c]) & 0xFF); c += 1
+            if have.get("reflectivity"):   vals.append(float(row[c])); c += 1
+            if have.get("transmittance"):  vals.append(float(row[c])); c += 1
+            if normals is not None:        vals += [float(row[c]), float(row[c+1]), float(row[c+2])]; c += 3
+            fh.write(pack(*vals))

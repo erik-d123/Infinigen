@@ -80,7 +80,7 @@ def test_material_change_affects_reflectance():
     hits_base, phase, res_base = lidar_debug.run_lidar_sample(cam, cfg, frame=1)
     assert_positive(hits_base, "baseline hits")
     assert np.all(np.asarray(res_base["range_m"]) > 0)
-    refl_base = np.mean(res_base["return_power"])
+    refl_base = np.mean(res_base["reflectivity"])
 
     metallic_mat = lidar_debug.make_principled_material(
         "MetalMat",
@@ -94,7 +94,7 @@ def test_material_change_affects_reflectance():
 
     hits_metal, _, res_metal = lidar_debug.run_lidar_sample(cam, cfg, frame=1, phase=phase)
     assert_positive(hits_metal, "metal hits")
-    refl_metal = np.mean(res_metal["return_power"])
+    refl_metal = np.mean(res_metal["reflectivity"])
 
     assert refl_metal > refl_base
 
@@ -123,6 +123,7 @@ def test_transmissive_secondary_returns():
     if res.get("transmittance") is not None:
         trans = np.asarray(res["transmittance"], dtype=float)
         assert np.all(trans >= 0.0)
+        assert np.all(trans <= 1.0 + 1e-6)
 
 
 def test_metallic_specular_independence():
@@ -148,11 +149,11 @@ def test_metallic_specular_independence():
     plane.data.materials.clear()
     plane.data.materials.append(mat_a)
     props_a = extract_material_properties(plane, 0, depsgraph)
-    I_a, _ = compute_intensity(props_a, cos_i=1.0, R=5.0, cfg=cfg)
+    I_a, _, _, _, _ = compute_intensity(props_a, cos_i=1.0, R=5.0, cfg=cfg)
 
     plane.data.materials[0] = mat_b
     props_b = extract_material_properties(plane, 0, depsgraph)
-    I_b, _ = compute_intensity(props_b, cos_i=1.0, R=5.0, cfg=cfg)
+    I_b, _, _, _, _ = compute_intensity(props_b, cos_i=1.0, R=5.0, cfg=cfg)
 
     assert abs(I_a - I_b) < 1e-4
 
@@ -187,11 +188,41 @@ def test_frosted_transmission_roughness_damps_returns():
     plane.data.materials.clear()
     plane.data.materials.append(glass_clear)
     props_c = extract_material_properties(plane, 0, depsgraph)
-    I_c, residual_c = compute_intensity(props_c, cos_i=0.95, R=3.0, cfg=cfg)
+    I_c, residual_c, _, _, _ = compute_intensity(props_c, cos_i=0.95, R=3.0, cfg=cfg)
 
     plane.data.materials[0] = glass_frost
     props_f = extract_material_properties(plane, 0, depsgraph)
-    I_f, residual_f = compute_intensity(props_f, cos_i=0.95, R=3.0, cfg=cfg)
+    I_f, residual_f, _, _, _ = compute_intensity(props_f, cos_i=0.95, R=3.0, cfg=cfg)
 
     assert I_f < I_c
     assert residual_f < residual_c
+
+
+def test_energy_conservation_simple():
+    """Ensure reflectivity + transmission never exceeds unity."""
+    import bpy
+    from lidar.lidar_config import LidarConfig
+    from lidar.intensity_model import compute_intensity
+    from scripts import debug_lidar_checks as lidar_debug
+
+    lidar_debug.reset_scene()
+    plane = lidar_debug.make_plane("EnergyPlane")
+    mat = lidar_debug.make_principled_material(
+        "EnergyMat",
+        base_color=(0.5, 0.4, 0.3, 1.0),
+        metallic=0.2,
+        roughness=0.25,
+        specular=0.55,
+        transmission=0.35,
+    )
+    plane.data.materials.append(mat)
+    bpy.context.view_layer.update()
+
+    cfg = LidarConfig()
+    cfg.auto_expose = False
+    cfg.global_scale = 1.0
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    props = extract_material_properties(plane, 0, depsgraph)
+    _, _, refl, T_mat, _ = compute_intensity(props, cos_i=0.9, R=3.0, cfg=cfg)
+
+    assert refl + T_mat <= 1.000001

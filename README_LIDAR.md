@@ -4,10 +4,10 @@ This tool generates LiDAR ground truth for Infinigen indoor scenes with indoor-f
 
 ## Features
 
-- Metallic handling: F0 from base color, ignores Principled 'Specular' when metallic.
-- Retroreflection clamp for smooth mirrors to avoid grazing blow-up.
-- Transmission roughness damps both primary specular and pass-through residual.
-- Alpha treated as transmission only for glass-like materials; capped for decals/paints.
+- Energy-preserving Lambert + Schlick specular reflecting Principled BSDF inputs (base color, metallic, specular, roughness, IOR).
+- Transmission driven purely by the Principled `Transmission` socket; alpha is treated as coverage and applied after the radiometry.
+- Optional single secondary return for transmissive materials, scaled by `(1 - transmission_roughness)^2` and a simple attenuation knob.
+- Direct Principled socket sampling: Base Color, Roughness, Metallic, Transmission, Alpha, and Transmission Roughness when the socket is linked to an image texture.
 
 - Indoor-oriented sensor presets: `VLP-16`, `HDL-32E`, `HDL-64E`, `OS1-128`
 - Material-aware intensity model (diffuse + specular) with optional percentile auto exposure
@@ -73,8 +73,7 @@ Key arguments:
 - `--force-azimuth-steps`: Explicit azimuth column count
 - `--ply-frame`: Output frame for PLYs (`sensor`, `camera`, `world`)
 - `--secondary`: Enable pass-through secondary returns for transmissive surfaces
-- `--secondary-extinction`: Beer–Lambert extinction coefficient (1/m) applied when `--secondary` is active
-- `--auto-expose`: Enable percentile-based per-frame scaling for the `intensity` column (default is stable, physically based `return_power`)
+- `--auto-expose`: Enable percentile-based per-frame scaling for the `intensity` column (default is stable, physics-based `reflectivity`)
 - `--secondary-min-cos`: Minimum cosine of incidence needed to spawn a pass-through return (default 0.95)
 - `--subframes`: Number of temporal pose samples per frame when approximating rolling shutter (default 1)
 - `--ply-binary`: Emit binary PLY files instead of ASCII
@@ -88,7 +87,7 @@ python lidar/lidar_viewer.py path/to/output_dir --color intensity --view world
 
 Parameters:
 - `path/to/output_dir`: Directory produced by the generator (must contain `lidar_frame_*.ply`)
-- `--color`: Initial coloring mode (`intensity` or `ring`)
+- `--color`: Initial coloring mode (`intensity`, `reflectivity`, or `ring`)
 - `--view`: Initial viewpoint (`world` or `camera`; `--camera-view` is a shortcut)
 - `--frame`: Load a specific frame immediately
 - `--no-trajectory`: Hide the camera path overlay
@@ -97,27 +96,34 @@ Parameters:
 
 Defaults are tuned for indoor scanning:
 
-1. Distance falloff of `1 / r^2` (physical inverse-square; override as needed)
-2. Optional per-frame auto exposure: 95th percentile mapped to intensity 200
-3. Principled BSDF sampling for diffuse/specular return power with simple image-texture lookups and transmissive attenuation
-4. Minimum range 5 cm to retain close geometry
-5. No random dropout; grazing acceptance allows all non-backfacing hits
-6. Percentile-based coloring in the viewer for stable contrast
-7. Per-material overrides (set on the Blender material):
-   - `lidar_diffuse` or `lidar_diffuse_scale` to tweak diffuse albedo
-   - `lidar_specular_scale` to boost or reduce specular return
-   - `lidar_transmission` to force pass-through fraction
-   - `lidar_disable_secondary` (bool) to block secondary returns for special cases
+1. Distance falloff of `1 / r^{distance_power}` (default `2.0`) with optional percentile auto-exposure (off by default).
+2. Reflectivity = Lambert diffuse + Schlick specular (F0 from IOR when available, otherwise Principled `Specular`), with metallic mixing and Principled texture sampling when sockets are directly linked.
+3. Transmission = Principled `Transmission` (metals force 0). Alpha is applied once as coverage; the default fallback when the socket is unlinked is `0.25`.
+4. Optional single secondary: residual `T * (1 - R_spec)` damped by `(1 - transmission_roughness)^2` and `cfg.transmission_attenuation` (default `0.2`), capped by `cfg.secondary_cap` (default `0.5`).
+5. Deterministic returns: no sensor noise, no retroreflection clamp, no Beer–Lambert thickness modeling.
+6. Per-material overrides (set on the Blender material):
+   - `lidar_diffuse` / `lidar_diffuse_scale`
+   - `lidar_specular_scale`
+   - `lidar_transmission`
+   - `lidar_disable_secondary`
+
+### Tweaks via `cfg_kwargs`
+
+- `transmission_attenuation` (default 0.2) scales the residual energy sent through transmissive surfaces.
+- `secondary_cap` (default 0.5) clamps the secondary intensity relative to the primary.
+- `hit_offset` (default 5e-4 m) offsets secondary rays along the surface normal to avoid self-intersections.
+- `prefer_ior` (default True) uses Principled IOR when available to derive the Fresnel F0.
+
 
 ## Outputs
 
-- `lidar_frame_XXXX.ply`: Per-frame point clouds in the chosen frame (with intensity, return power, range, normals)
+- `lidar_frame_XXXX.ply`: Per-frame point clouds in the chosen frame (with intensity, reflectivity, range, normals)
 - `lidar_config.json`: Serialized `LidarConfig` used for the run
 - `frame_metadata.json`: Per-frame point counts and intensity scale factors
 - `trajectory.json`: Camera translations indexed by frame
 - `timestamps.txt`: Seconds from the first frame (derived from scene FPS)
 - `poses_tum.txt`: TUM-format poses `timestamp tx ty tz qx qy qz qw`
-> The `intensity` column in the PLY is per-frame scaled for visualization. Use the `return_power` float column (and `range_m`) for training or quantitative analysis. The `transmittance` column records per-return energy after glass attenuation (auto exposure only adjusts the 8-bit `intensity`).
+> The `intensity` column in the PLY is per-frame scaled for visualization. Use the `reflectivity` float column (and `range_m`) for training or quantitative analysis. The `transmittance` column mirrors the Principled `Transmission` value for the surface hit (auto exposure only adjusts the 8-bit `intensity`).
 
 ### PLY Structure
 
@@ -139,7 +145,7 @@ property uchar num_returns
 property float range_m
 property float cos_incidence    # when plyfile installed
 property uchar mat_class        # when plyfile installed
-property float return_power     # when plyfile installed
+property float reflectivity     # when plyfile installed
 property float transmittance    # when pass-through enabled (or legacy exposure scale)
 end_header
 ...

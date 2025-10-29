@@ -1,362 +1,289 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Indoor LiDAR raycasting loop with alpha-at-output and optional secondary
 
-# LiDAR ray casting module
-# Handles ray pattern generation and ray casting with material-aware intensity
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Dict, Tuple, List, Optional
 
 import math
-import random
 import numpy as np
-from mathutils import Vector
 
-# Per-object evaluated geometry cache, cleared at each perform_raycasting call
-_OBJ_CACHE = {}
-
-def _prepare_eval(obj, depsgraph):
-    """Return cached evaluated object, mesh, and transforms."""
-    key = id(obj)
-    entry = _OBJ_CACHE.get(key)
-    if entry is not None:
-        current_names = [
-            getattr(slot.material, "name", None) if slot.material else None
-            for slot in getattr(obj, "material_slots", [])
-        ]
-        if entry.get("material_names") == current_names:
-            return entry
-        _OBJ_CACHE.pop(key, None)
-    try:
-        eval_obj = obj.evaluated_get(depsgraph)
-    except ReferenceError:
-        return {"eval_obj": obj, "mesh": getattr(obj, "data", None), "world": getattr(obj, "matrix_world", None), "inv_world": None}
-    mesh = eval_obj.data
-    try:
-        mesh.calc_normals_split()
-    except Exception:
-        pass
-    try:
-        mesh.calc_loop_triangles()
-    except Exception:
-        pass
-    entry = {
-        "eval_obj": eval_obj,
-        "mesh": mesh,
-        "world": eval_obj.matrix_world,
-        "inv_world": eval_obj.matrix_world.inverted(),
-        "world3x3": eval_obj.matrix_world.to_3x3(),
-        "material_names": [
-            getattr(slot.material, "name", None) if slot.material else None
-            for slot in getattr(obj, "material_slots", [])
-        ],
-    }
-    _OBJ_CACHE[key] = entry
-    return entry
-
-
-
-# Support both package and script execution contexts
 try:
-    from .intensity_model import (
-        extract_material_properties,
-        compute_intensity,
-        classify_material,
-        transmissive_reflectance,
-    )
+    import bpy
 except Exception:
-    from intensity_model import (
-        extract_material_properties,
-        compute_intensity,
-        classify_material,
-        transmissive_reflectance,
-    )
+    bpy = None
+
+from lidar.intensity_model import extract_material_properties, compute_intensity, classify_material
 
 
-def _barycentric_coords(tri_verts, point):
-    a, b, c = tri_verts
-    v0 = b - a
-    v1 = c - a
-    v2 = point - a
-    d00 = v0.dot(v0)
-    d01 = v0.dot(v1)
-    d11 = v1.dot(v1)
-    d20 = v2.dot(v0)
-    d21 = v2.dot(v1)
-    denom = d00 * d11 - d01 * d01
-    if abs(denom) < 1e-12:
-        return None
-    v = (d11 * d20 - d01 * d21) / denom
-    w = (d00 * d21 - d01 * d20) / denom
-    u = 1.0 - v - w
-    return (u, v, w)
+# ------------------------- helpers -------------------------
+
+def _unit(v: np.ndarray) -> np.ndarray:
+    n = float(np.linalg.norm(v))
+    return v / n if n > 0 else v
+
+def _clip01(x: np.ndarray) -> np.ndarray:
+    return np.clip(x, 0.0, 1.0)
+
+def _percentile_scale(raw_pos: np.ndarray, pct: float, target_u8: float) -> float:
+    # Map the pct-th percentile of positive raw to target_u8/255
+    p = float(np.percentile(raw_pos, pct))
+    if p <= 1e-12:
+        return 0.0
+    return (target_u8 / 255.0) / p
+
+def _compute_cos_i(normal: np.ndarray, ray_dir: np.ndarray) -> float:
+    # ray_dir points from origin into scene. Incidence uses negative ray_dir.
+    return float(max(0.0, min(1.0, -np.dot(_unit(ray_dir), _unit(normal)))))
 
 
-def _compute_shading_normal(obj, depsgraph, poly_index, hit_world, fallback_normal):
-    entry = _prepare_eval(obj, depsgraph)
-    eval_obj = entry.get("eval_obj")
-    mesh = entry.get("mesh")
-    inv_world = entry.get("inv_world")
-    if mesh is None or inv_world is None:
-        return fallback_normal
-    hit_local = inv_world @ hit_world
-    for tri in mesh.loop_triangles:
-        if tri.polygon_index != poly_index:
-            continue
-        verts = [mesh.vertices[i].co for i in tri.vertices]
-        bary = _barycentric_coords(verts, hit_local)
-        if bary is None:
-            continue
-        loops = tri.loops
-        if not hasattr(mesh, "loops"):
-            return fallback_normal
-        if tri.polygon_index >= len(mesh.polygons):
-            return fallback_normal
-        poly = mesh.polygons[tri.polygon_index]
-        if not hasattr(mesh, "loops"):
-            return fallback_normal
-        nrm_local = poly.normal.copy()
-        for i, w in zip(loops, bary):
-            try:
-                nrm_local = nrm_local + mesh.loops[i].normal * w
-            except Exception:
-                pass
-        nrm_local.normalize()
-        nrm_world = eval_obj.matrix_world.to_3x3() @ nrm_local
-        if nrm_world.length_squared > 1e-12:
-            return nrm_world.normalized()
-    return fallback_normal
-def _beer_lambert_transmittance(obj, depsgraph, entry_loc, direction_world, bias, extinction_coeff):
-    if extinction_coeff <= 0.0:
-        return 1.0
-    entry = _prepare_eval(obj, depsgraph)
-    mesh = entry.get("mesh")
-    world = entry.get("world")
-    inv_world = entry.get("inv_world")
-    if mesh is None or world is None or inv_world is None:
-        return 1.0
-    origin_world = entry_loc + direction_world * max(bias, 1e-4)
-    origin_local = inv_world @ origin_world
-    dir_local = inv_world.to_3x3() @ direction_world
-    if dir_local.length_squared == 0.0:
-        return 1.0
-    dir_local.normalize()
-    try:
-        hit, location_local, *_ = entry["eval_obj"].ray_cast(origin_local, dir_local)
-    except AttributeError:
-        return 1.0
-    if not hit:
-        return 1.0
-    exit_world = world @ location_local
-    thickness = max(0.0, (exit_world - entry_loc).length)
-    return math.exp(-extinction_coeff * thickness)
+# --------------------- public API: rays ---------------------
+
+def generate_sensor_rays(cfg) -> Dict[str, np.ndarray]:
+    """
+    Build per-ring directions (sensor frame). Minimal, indoor defaults.
+    Returns dict with:
+      - directions: (R, A, 3) unit vectors in +X forward sensor frame
+      - ring: (R,) ring indices
+      - azimuth: (A,) azimuth samples in radians
+    """
+    rings = getattr(cfg, "rings", 16)
+    az_steps = int(getattr(cfg, "force_azimuth_steps", 0) or getattr(cfg, "azimuth_steps", 1800))
+    # Elevation fan: linear indoor default if preset not provided
+    elev = np.linspace(-15.0, 15.0, rings) * (math.pi / 180.0)
+    az = np.linspace(-math.pi, math.pi, az_steps, endpoint=False)
+
+    # Sensor frame: +X forward, +Y left, +Z up
+    dirs = np.zeros((rings, az_steps, 3), dtype=np.float32)
+    for r, el in enumerate(elev):
+        ce, se = math.cos(el), math.sin(el)
+        # Base forward points +X at az=0
+        x = np.cos(az) * ce
+        y = np.sin(az) * ce
+        z = np.full_like(az, se)
+        dirs[r, :, 0] = x
+        dirs[r, :, 1] = y
+        dirs[r, :, 2] = z
+    return {"directions": dirs, "ring": np.arange(rings, dtype=np.int16), "azimuth": az.astype(np.float32)}
 
 
+# ----------------- public API: raycasting ------------------
 
-def generate_sensor_rays(config):
-    # Generate ray directions for LiDAR sensor pattern
-    elev = np.array([math.radians(a) for a in config.elevation_angles_deg], dtype=np.float32)
-    az = np.linspace(0.0, 2.0 * math.pi, config.num_azimuth, endpoint=False, dtype=np.float32)
+@dataclass
+class RaycastResult:
+    xyz: np.ndarray
+    intensity_u8: np.ndarray
+    ring: np.ndarray
+    azimuth: np.ndarray
+    elevation: np.ndarray
+    return_id: np.ndarray
+    num_returns: np.ndarray
+    range_m: np.ndarray
+    cos_incidence: Optional[np.ndarray] = None
+    mat_class: Optional[np.ndarray] = None
+    reflectivity: Optional[np.ndarray] = None
+    transmittance: Optional[np.ndarray] = None
+    return_power: Optional[np.ndarray] = None
 
-    ce = np.cos(elev)
-    se = np.sin(elev)
 
-    # Build ray directions and metadata
-    dirs_zero_yaw, ring_ids, az_idx, elev_arr, az_base = [], [], [], [], []
-    for r, (c, s) in enumerate(zip(ce, se)):
-        for i, a in enumerate(az):
-            dirs_zero_yaw.append((c, 0.0, s))   # +X with elevation; yaw applied later
-            ring_ids.append(r)
-            az_idx.append(i)
-            elev_arr.append(float(elev[r]))
-            az_base.append(float(a))
+def perform_raycasting(
+    scene,
+    depsgraph,
+    origins: np.ndarray,         # (N,3) world
+    directions: np.ndarray,      # (N,3) world unit
+    rings: np.ndarray,           # (N,)
+    azimuth_rad: np.ndarray,     # (N,)
+    cfg,
+) -> Dict[str, np.ndarray]:
+    """
+    Cast rays, compute radiometry per hit, optionally spawn one secondary.
+    Alpha is applied once here to both reflectivity and intensity.
 
-    return (
-        np.array(dirs_zero_yaw, dtype=np.float32),
-        np.array(ring_ids, dtype=np.uint16),
-        np.array(az_idx, dtype=np.uint16),
-        np.array(elev_arr, dtype=np.float32),
-        np.array(az_base, dtype=np.float32)
-    )
+    Returns dict of numpy arrays suitable for PLY writing.
+    """
+    assert bpy is not None, "perform_raycasting requires Blender (bpy)"
 
-def perform_raycasting(scene, depsgraph, origin_world, world_dirs, ring_ids, az_rad, el_rad, t_offsets, cfg):
-    _OBJ_CACHE.clear()
-    # Cast rays and compute LiDAR returns with material-aware intensities
-    
-    # Output collections
-    points_world, rings = [], []
-    intens_raw, return_power = [], []
-    ranges_m = []
-    transmittance_list = []
-    az_hit, el_hit, t_hit = [], [], []
-    ret_id, num_rets = [], []
-    cos_list, mat_class_list = [], []  # Debug/analysis fields
-    normals_world = []
-    base_eps = max(1e-4, 1e-5 * max(cfg.min_range, 1.0))  # offset to avoid immediate self-intersections
+    min_r = float(getattr(cfg, "min_range", 0.05))
+    max_r = float(getattr(cfg, "max_range", 100.0))
+    dist_p = float(getattr(cfg, "distance_power", 2.0))
 
-    for i, d in enumerate(world_dirs):
-        # Random dropout simulation
-        if random.random() < cfg.dropout_prob:
-            continue
-        dv = Vector(d)
-        origin_eps = origin_world + dv * base_eps
-        hit, loc, nrm, poly_idx, obj, _ = scene.ray_cast(
-            depsgraph, origin_eps, dv, distance=cfg.max_range
-        )
+    # Secondary settings
+    enable_secondary = bool(getattr(cfg, "enable_secondary", False))
+    sec_min_res = float(getattr(cfg, "secondary_min_residual", 0.02))
+    sec_bias = float(getattr(cfg, "secondary_ray_bias", getattr(cfg, "hit_offset", 5e-4)))
+    sec_min_cos = float(getattr(cfg, "secondary_min_cos", 0.95))
+    merge_eps = float(getattr(cfg, "secondary_merge_eps", 0.0))
 
-        if not hit or not obj:
+    # Angle dropout
+    grazing_drop = float(getattr(cfg, "grazing_dropout_cos_thresh", 0.05))
+
+    # Output buffers (grow as needed)
+    pts, inten_raw, refl_f, rings_out, az_out, elev_out = [], [], [], [], [], []
+    ret_id, num_ret, ranges, cos_i_list, mat_cls, trans_list = [], [], [], [], [], []
+
+    # Cast loop
+    N = int(origins.shape[0])
+    for i in range(N):
+        o = origins[i].astype(np.float64)
+        d = _unit(directions[i].astype(np.float64))
+
+        hit, loc, normal, face_index, obj, _ = scene.ray_cast(depsgraph, tuple(o), tuple(d), distance=max_r)
+        if not hit:
             continue
 
-        returns = []
-
-        def append_return(point_vec, intensity_val, cos_val, normal_vec, mat_cls, range_val, return_index, total_returns, transmittance):
-            points_world.append(np.array(point_vec, dtype=np.float32))
-            rings.append(ring_ids[i])
-            intens_raw.append(intensity_val)
-            return_power.append(intensity_val)
-            ranges_m.append(range_val)
-            az_hit.append(az_rad[i])
-            el_hit.append(el_rad[i])
-            t_hit.append(t_offsets[i])
-            ret_id.append(return_index)
-            num_rets.append(total_returns)
-            cos_list.append(cos_val)
-            mat_class_list.append(mat_cls)
-            normals_world.append(np.array(normal_vec, dtype=np.float32))
-            transmittance_list.append(transmittance)
-
-        dist = (loc - origin_world).length
-        if cfg.min_range <= dist <= cfg.max_range:
-            face_normal = Vector(nrm).normalized()
-            n = _compute_shading_normal(obj, depsgraph, poly_idx, loc, face_normal)
-            cos_i = max(0.0, float(n.dot(-dv)))
-            if cos_i >= cfg.grazing_dropout_cos_thresh:
-                props = extract_material_properties(obj, poly_idx, depsgraph, loc)
-                I01, residual_T = compute_intensity(props, cos_i, dist, cfg)
-                if I01 > 0.0:
-                    I01 *= max(0.0, 1.0 + random.gauss(0.0, cfg.intensity_jitter_std))
-                    sigma_floor = cfg.range_noise_a + cfg.range_noise_b * dist
-                    sigma_r = sigma_floor + 0.02 / math.sqrt(max(I01, 1e-6))
-                    dist_noisy = max(cfg.min_range, dist + random.gauss(0.0, sigma_r))
-                    loc_noisy = origin_world + dv * dist_noisy
-                    transmittance_primary = 1.0
-                    returns.append(
-                        {
-                            "point": loc_noisy,
-                            "intensity": I01,
-                            "cos": cos_i,
-                            "normal": n,
-                            "mat_class": classify_material(props),
-                            "range": dist_noisy,
-                            "transmittance": transmittance_primary,
-                        }
-                    )
-                residual_T = max(0.0, residual_T)
-
-                if (
-                    cfg.enable_secondary
-                    and not props.get("disable_secondary", False)
-                    and residual_T > cfg.secondary_min_residual
-                    and (cfg.max_range - dist) > cfg.secondary_ray_bias
-                    and cos_i >= getattr(cfg, "secondary_min_cos", 0.95)
-                ):
-                    origin_second = loc + dv * cfg.secondary_ray_bias
-                    remaining_dist = max(cfg.max_range - dist, cfg.secondary_ray_bias)
-                    hit2, loc2, nrm2, poly_idx2, obj2, _ = scene.ray_cast(
-                        depsgraph, origin_second, dv, distance=remaining_dist
-                    )
-                    if hit2 and obj2:
-                        total_dist = (loc2 - origin_world).length
-                        if cfg.min_range <= total_dist <= cfg.max_range:
-                            face_normal2 = Vector(nrm2).normalized()
-                            n2 = _compute_shading_normal(obj2, depsgraph, poly_idx2, loc2, face_normal2)
-                            cos_i2 = max(0.0, float(n2.dot(-dv)))
-                            if cos_i2 >= cfg.grazing_dropout_cos_thresh:
-                                props2 = extract_material_properties(obj2, poly_idx2, depsgraph, loc2)
-                                I02, _ = compute_intensity(props2, cos_i2, total_dist, cfg)
-
-                                transmission_scale = residual_T
-                                if cfg.secondary_extinction > 0.0 and transmission_scale > cfg.secondary_min_residual:
-                                    transmission_scale *= _beer_lambert_transmittance(
-                                        obj, depsgraph, loc, dv, cfg.secondary_ray_bias, cfg.secondary_extinction
-                                    )
-                                F_exit = transmissive_reflectance(cos_i, props.get("ior", 1.45))
-                                transmission_scale *= max(0.0, 1.0 - F_exit)
-
-                                I02 *= transmission_scale
-                                if I02 > 0.0:
-                                    I02 *= max(0.0, 1.0 + random.gauss(0.0, cfg.intensity_jitter_std))
-                                    sigma_floor2 = cfg.range_noise_a + cfg.range_noise_b * total_dist
-                                    sigma_r2 = sigma_floor2 + 0.02 / math.sqrt(max(I02, 1e-6))
-                                    dist_noisy2 = max(cfg.min_range, total_dist + random.gauss(0.0, sigma_r2))
-                                    loc_noisy2 = origin_world + dv * dist_noisy2
-                                    returns.append(
-                                        {
-                                            "point": loc_noisy2,
-                                            "intensity": I02,
-                                            "cos": cos_i2,
-                                            "normal": n2,
-                                            "mat_class": classify_material(props2),
-                                            "range": dist_noisy2,
-                                            "transmittance": transmission_scale,
-                                        }
-                                    )
-
-        if not returns:
+        loc = np.array(loc, dtype=np.float64)
+        nrm = _unit(np.array(normal, dtype=np.float64))
+        r = float(np.linalg.norm(loc - o))
+        if r < min_r or r > max_r:
             continue
 
-        returns.sort(key=lambda r: r["range"])
-        if getattr(cfg, "secondary_merge_eps", 0.0) and len(returns) > 1:
-            merged = [returns[0]]
-            for ret in returns[1:]:
-                if abs(ret["range"] - merged[-1]["range"]) <= cfg.secondary_merge_eps:
-                    merged[-1]["intensity"] += float(ret.get("intensity", 0.0))
-                    merged[-1]["transmittance"] = float(merged[-1].get("transmittance", 1.0)) * float(ret.get("transmittance", 1.0))
-                else:
-                    merged.append(ret)
-            returns = merged
-        if len(returns) > 2:
-            returns = [returns[0], returns[1]]
-        total_returns = len(returns)
-        for idx_ret, ret in enumerate(returns, start=1):
-            append_return(
-                ret["point"],
-                ret["intensity"],
-                ret["cos"],
-                ret["normal"],
-                ret["mat_class"],
-                ret["range"],
-                idx_ret,
-                total_returns,
-                ret.get("transmittance", 1.0),
-            )
+        cos_i = _compute_cos_i(nrm, d)
+        if cos_i < grazing_drop:
+            continue
 
-    if not points_world:
-        return None
+        # Material extraction and radiometry (pre-alpha reflectivity)
+        props = extract_material_properties(obj, int(face_index), depsgraph, loc)
+        I0, sec_scale, refl0, T_mat, alpha_cov = compute_intensity(props, cos_i, r, cfg)
 
-    # Auto-exposure: map percentile to target intensity
-    raw = np.array(intens_raw, dtype=np.float32)
-    if cfg.auto_expose and raw.size >= 4:
-        positive = raw[raw > 0]
-        p = np.percentile(positive, cfg.target_percentile) if positive.size else 1.0
-        scale = (cfg.target_intensity / 255.0) / max(1e-6, p)
+        # Apply alpha once
+        refl = float(refl0 * alpha_cov)
+        I = float(I0 * alpha_cov)
+
+        # Primary record
+        pts.append(loc.astype(np.float32))
+        inten_raw.append(I)
+        refl_f.append(refl)
+        rings_out.append(int(rings[i]))
+        az_out.append(float(azimuth_rad[i]))
+        # approximate elevation from direction
+        elev_out.append(float(math.asin(max(-1.0, min(1.0, d[2])))))
+        ret_id.append(1)
+        ranges.append(r)
+        cos_i_list.append(cos_i)
+        mat_cls.append(int(classify_material(props)))
+        trans_list.append(float(T_mat))
+
+        # Secondary path
+        sec_added = False
+        if enable_secondary:
+            residual = float(sec_scale * alpha_cov)  # spawn energy from primary surface
+            if residual > sec_min_res and cos_i >= sec_min_cos and (max_r - r) > sec_bias:
+                # Offset origin away from surface to avoid self-hit
+                off_dir = nrm if np.isfinite(nrm).all() else d
+                o2 = loc + off_dir * max(1e-5, sec_bias)
+                d2 = d  # pass-through keeps direction
+
+                hit2, loc2, normal2, face_index2, obj2, _ = scene.ray_cast(depsgraph, tuple(o2), tuple(d2), distance=(max_r - r))
+                if hit2:
+                    loc2 = np.array(loc2, dtype=np.float64)
+                    r2 = r + float(np.linalg.norm(loc2 - o2))
+                    if r2 >= min_r and r2 <= max_r:
+                        nrm2 = _unit(np.array(normal2, dtype=np.float64))
+                        cos_i2 = _compute_cos_i(nrm2, d2)
+
+                        # Secondary material and radiometry
+                        props2 = extract_material_properties(obj2, int(face_index2), depsgraph, loc2)
+                        I0_2, _, refl0_2, T2, alpha2 = compute_intensity(props2, cos_i2, r2, cfg)
+
+                        # Effective secondary reflectivity includes residual and both coverages
+                        eff_scale = residual * alpha2
+                        refl2 = float(refl0_2 * eff_scale)
+                        I2 = float(I0_2 * eff_scale)
+
+                        # Candidate secondary record
+                        P2 = loc2.astype(np.float32)
+
+                        # Optional merge by range epsilon
+                        if merge_eps > 0.0 and abs(r2 - r) <= merge_eps:
+                            # Keep the stronger; update num_returns later
+                            if I2 > I:
+                                pts[-1] = P2
+                                inten_raw[-1] = I2
+                                refl_f[-1] = refl2
+                                ranges[-1] = r2
+                                cos_i_list[-1] = cos_i2
+                                mat_cls[-1] = int(classify_material(props2))
+                                trans_list[-1] = float(T2)
+                            sec_added = False
+                        else:
+                            pts.append(P2)
+                            inten_raw.append(I2)
+                            refl_f.append(refl2)
+                            rings_out.append(int(rings[i]))
+                            az_out.append(float(azimuth_rad[i]))
+                            elev_out.append(float(math.asin(max(-1.0, min(1.0, d2[2])))))
+                            ret_id.append(2)
+                            ranges.append(r2)
+                            cos_i_list.append(cos_i2)
+                            mat_cls.append(int(classify_material(props2)))
+                            trans_list.append(float(T2))
+                            sec_added = True
+
+        # Set num_returns for this beam
+        if sec_added:
+            num_ret.append(2)
+            num_ret.append(2)  # both entries carry total count
+        else:
+            num_ret.append(1)
+
+    if not pts:
+        # Empty outputs with correct dtypes
+        return {
+            "points": np.zeros((0, 3), np.float32),
+            "intensity": np.zeros((0,), np.uint8),
+            "ring": np.zeros((0,), np.uint16),
+            "azimuth": np.zeros((0,), np.float32),
+            "elevation": np.zeros((0,), np.float32),
+            "return_id": np.zeros((0,), np.uint8),
+            "num_returns": np.zeros((0,), np.uint8),
+            "range_m": np.zeros((0,), np.float32),
+            "cos_incidence": np.zeros((0,), np.float32),
+            "mat_class": np.zeros((0,), np.uint8),
+            "reflectivity": np.zeros((0,), np.float32),
+            "transmittance": np.zeros((0,), np.float32),
+            "return_power": np.zeros((0,), np.float32),
+        }
+
+    pts = np.stack(pts, axis=0)
+    inten_raw = np.asarray(inten_raw, dtype=np.float32)
+    refl_f = _clip01(np.asarray(refl_f, dtype=np.float32))
+    rings_out = np.asarray(rings_out, dtype=np.uint16)
+    az_out = np.asarray(az_out, dtype=np.float32)
+    elev_out = np.asarray(elev_out, dtype=np.float32)
+    ret_id = np.asarray(ret_id, dtype=np.uint8)
+    num_ret = np.asarray(num_ret, dtype=np.uint8)
+    ranges = np.asarray(ranges, dtype=np.float32)
+    cos_i_arr = np.asarray(cos_i_list, dtype=np.float32)
+    mat_cls = np.asarray(mat_cls, dtype=np.uint8)
+    trans_arr = _clip01(np.asarray(trans_list, dtype=np.float32))
+
+    # Exposure mapping to U8
+    auto = bool(getattr(cfg, "auto_expose", False))
+    global_scale = float(getattr(cfg, 'global_scale', 1.0))
+    target_pct = float(getattr(cfg, "target_percentile", 95.0))
+    target_u8 = float(getattr(cfg, "target_intensity", 200.0))
+
+    pos_mask = inten_raw > 0.0
+    if auto and np.count_nonzero(pos_mask) >= 4:
+        scale = _percentile_scale(inten_raw[pos_mask], target_pct, target_u8)
     else:
-        scale = float(cfg.global_scale) / 255.0
+        scale = global_scale
+    inten_u8 = np.clip(np.round(inten_raw * scale * 255.0), 0, 255).astype(np.uint8)
 
-    ints_u8 = np.clip(np.round(raw * scale * 255.0), 0, 255).astype(np.uint8)
-
-    # Return structured data
+    # Return power equals reflectivity (pre-U8), for analysis
     return {
-        "points_world": np.vstack(points_world),
-        "ring_ids": np.array(rings, dtype=np.uint16),
-        "intensities_u8": ints_u8,
-        "return_power": np.array(return_power, dtype=np.float32),
-        "range_m": np.array(ranges_m, dtype=np.float32),
-        "azimuth_rad": np.array(az_hit, dtype=np.float32),
-        "elevation_rad": np.array(el_hit, dtype=np.float32),
-        "time_offset": np.array(t_hit, dtype=np.float32),
-        "return_id": np.array(ret_id, dtype=np.uint8),
-        "num_returns": np.array(num_rets, dtype=np.uint8),
-        "scale_used": float(scale),
-        "cos_incidence": np.array(cos_list, dtype=np.float32),
-        "mat_class": np.array(mat_class_list, dtype=np.uint8),
-        "normals_world": np.vstack(normals_world),
-        "transmittance": np.array(transmittance_list, dtype=np.float32),
+        "points": pts,
+        "intensity": inten_u8,
+        "ring": rings_out,
+        "azimuth": az_out,
+        "elevation": elev_out,
+        "return_id": ret_id,
+        "num_returns": num_ret,
+        "range_m": ranges,
+        "cos_incidence": cos_i_arr,
+        "mat_class": mat_cls,
+        "reflectivity": refl_f,
+        "transmittance": trans_arr,
+        "return_power": refl_f.copy(),
+        "scale_used": np.float32(scale),
     }

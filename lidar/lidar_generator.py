@@ -1,381 +1,251 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Orchestration for indoor LiDAR: CLI + per-frame generation
 
+from __future__ import annotations
 import argparse
 import json
 import math
 import os
+import random
 import sys
-import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, List, Sequence
+
 import numpy as np
-import bpy
-from mathutils import Matrix
 
-# Local modules - robust import strategy that works in all contexts
-import os
-import sys
-
-# Add the current script's directory to path
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _THIS_DIR not in sys.path:
-    sys.path.append(_THIS_DIR)
-
-# First try relative import (when imported as part of a package)
 try:
-    from .lidar_config import LidarConfig, LIDAR_PRESETS
-    from .lidar_scene import setup_scene, resolve_camera, sensor_to_camera_rotation
-    from .lidar_raycast import generate_sensor_rays, perform_raycasting
-    from .lidar_io import save_ply, world_to_frame_matrix, _matrix_to_np3x3
-except (ImportError, ValueError):
-    # Fall back to absolute import (when run as a script)
-    from lidar_config import LidarConfig, LIDAR_PRESETS
-    from lidar_scene import setup_scene, resolve_camera, sensor_to_camera_rotation
-    from lidar_raycast import generate_sensor_rays, perform_raycasting
-    from lidar_io import save_ply, world_to_frame_matrix, _matrix_to_np3x3
+    import bpy
+except Exception:
+    bpy = None
 
-def _split_indices(col_frac: np.ndarray, subframes: int) -> list[np.ndarray]:
-    if subframes <= 1:
-        return [np.arange(col_frac.size, dtype=np.int32)]
-    order = np.argsort(col_frac)
-    chunks = np.array_split(order, subframes)
-    return [chunk.astype(np.int32) for chunk in chunks if chunk.size]
+from lidar.lidar_config import LidarConfig
+from lidar.lidar_raycast import generate_sensor_rays, perform_raycasting
+from lidar.lidar_scene import resolve_camera, sensor_to_camera_rotation
+from lidar.lidar_io import save_ply
 
+# ------------------------------- utils -------------------------------
 
-def _accumulate_results(accum, res_slice):
-    if accum is None:
-        arrays = {k: [res_slice[k]] for k in res_slice if k != "scale_used"}
-        return {"arrays": arrays, "scale": res_slice.get("scale_used", 0.0)}
-    for key, value in res_slice.items():
-        if key == "scale_used":
-            accum["scale"] = value
+def _parse_frames(frames_arg: str) -> List[int]:
+    """Accept '1-48', '1,5,10', or single '12'."""
+    s = str(frames_arg).strip()
+    if "-" in s:
+        a, b = s.split("-", 1)
+        a = int(a); b = int(b)
+        lo, hi = (a, b) if a <= b else (b, a)
+        return list(range(lo, hi + 1))
+    if "," in s:
+        return sorted({int(x) for x in s.split(",") if x})
+    return [int(s)]
+
+def _frame_time_seconds(scene, frame: int) -> float:
+    fps = scene.render.fps / max(1, scene.render.fps_base)
+    return (frame - 1) / max(1.0, float(fps))
+
+def _sensor_world_rotation(camera_obj) -> np.ndarray:
+    """R_world_sensor: world←sensor."""
+    R_cam_world = np.array(camera_obj.matrix_world.to_3x3(), dtype=float)
+    R_cam_sensor = np.array(sensor_to_camera_rotation(), dtype=float)  # camera←sensor
+    return R_cam_world @ R_cam_sensor
+
+def _world_from_sensor(camera_obj, dirs_sensor: np.ndarray) -> np.ndarray:
+    """Rotate sensor-frame rays to world."""
+    R = _sensor_world_rotation(camera_obj)  # world←sensor
+    return (R @ dirs_sensor.reshape(-1, 3).T).T.reshape(dirs_sensor.shape)
+
+def _origins_for(camera_obj, N: int) -> np.ndarray:
+    loc = np.array(camera_obj.matrix_world.translation, dtype=np.float64)
+    return np.repeat(loc[None, :], N, axis=0)
+
+def _ensure_dir(p: Path):
+    p.mkdir(parents=True, exist_ok=True)
+
+# --------------------------- frame processing ---------------------------
+
+@dataclass
+class FrameOutputs:
+    ply_path: Path
+    scale_used: float
+    points: int
+
+def process_frame(scene, camera_obj, cfg: LidarConfig, out_dir: Path, frame: int) -> FrameOutputs:
+    """Emit LiDAR for a single frame and save PLY + metadata JSON lines."""
+    assert bpy is not None, "Must run inside Blender"
+
+    # Set frame and update depsgraph
+    scene.frame_set(frame)
+    bpy.context.view_layer.update()
+    deps = bpy.context.evaluated_depsgraph_get()
+
+    # Rays in sensor frame
+    rays = generate_sensor_rays(cfg)
+    dirs_sensor = rays["directions"]  # (R,A,3), +X forward sensor frame
+    rings = np.repeat(np.arange(dirs_sensor.shape[0], dtype=np.int16), dirs_sensor.shape[1])
+    az = np.tile(np.linspace(-math.pi, math.pi, dirs_sensor.shape[1], endpoint=False).astype(np.float32),
+                 dirs_sensor.shape[0])
+
+    # World transform
+    dirs_world = _world_from_sensor(camera_obj, dirs_sensor).reshape(-1, 3).astype(np.float64)
+    dirs_world /= np.linalg.norm(dirs_world, axis=1, keepdims=True).clip(1e-12, None)
+    origins = _origins_for(camera_obj, dirs_world.shape[0])
+
+    # Cast
+    res = perform_raycasting(
+        scene=scene,
+        depsgraph=deps,
+        origins=origins,
+        directions=dirs_world,
+        rings=rings.astype(np.uint16),
+        azimuth_rad=az,
+        cfg=cfg,
+    )
+    # Frame transform for PLY
+    # sensor: +X fwd, +Y left, +Z up; camera: Blender camera; world: as-is
+    frame_mode = getattr(cfg, "ply_frame", "sensor")
+    pts_world = res["points"]
+    if frame_mode == "world":
+        pts_out = pts_world
+    else:
+        # world→camera
+        cam = camera_obj
+        R_wc = np.array(cam.matrix_world.to_3x3(), dtype=float)
+        t_wc = np.array(cam.matrix_world.translation, dtype=float)
+        R_cw = R_wc.T
+        pts_cam = (R_cw @ (pts_world - t_wc).T).T
+        if frame_mode == "camera":
+            pts_out = pts_cam
+        elif frame_mode == "sensor":
+            # camera→sensor
+            R_cs = np.array(sensor_to_camera_rotation(), dtype=float)  # camera←sensor
+            R_sc = R_cs.T
+            pts_out = (R_sc @ pts_cam.T).T
         else:
-            accum["arrays"].setdefault(key, []).append(value)
-    return accum
+            pts_out = pts_world  # fallback
 
-
-def _finalize_results(accum):
-    final = {}
-    for key, arr_list in accum["arrays"].items():
-        if len(arr_list) == 1:
-            final[key] = arr_list[0]
-        else:
-            sample = arr_list[0]
-            if getattr(sample, "ndim", 1) > 1:
-                final[key] = np.vstack(arr_list)
-            else:
-                final[key] = np.concatenate(arr_list)
-    final["scale_used"] = accum["scale"]
-    return final
-
-
-def process_frame(scene, cam_obj, frame, fps, output_dir, cfg: LidarConfig, sensor_R: Matrix, precomp, phase_offset_rad,
-                  *, write_ply=True):
-    bpy.context.scene.frame_set(frame)
-    dirs_sensor, ring_ids, az_idx, elev_rad, az_base = precomp
-
-    frame_dt = 1.0 / fps
-    rps = cfg.rpm / 60.0
-    omega = 2.0 * math.pi * rps
-    col_frac = az_idx.astype(np.float32) / float(cfg.num_azimuth)
-
-    cfg_subframes = getattr(cfg, "subframes", getattr(cfg, "rolling_subframes", 1))
-    subframes = cfg_subframes if cfg.rolling_shutter else 1
-    index_slices = _split_indices(col_frac, subframes)
-
-    accum = None
-    total_cast = 0
-    frame_start = time.time()
-    original_frame = bpy.context.scene.frame_current
-    original_subframe = getattr(bpy.context.scene, "frame_subframe", 0.0)
-
-    sensor_to_cam_np = _matrix_to_np3x3(sensor_R)
-    rev_time = 1.0 / max(rps, 1e-6) if cfg.continuous_spin and cfg.rolling_shutter else None
-
-    try:
-        for slice_indices in index_slices:
-            if slice_indices.size == 0:
-                continue
-
-            subframe = 0.0
-            if cfg.rolling_shutter and subframes > 1:
-                subframe = float(np.clip(np.mean(col_frac[slice_indices]), 0.0, 0.999999))
-                bpy.context.scene.frame_set(frame, subframe=subframe)
-            depsgraph = bpy.context.evaluated_depsgraph_get()
-
-            az_slice = az_base[slice_indices] + phase_offset_rad
-            if cfg.continuous_spin and cfg.rolling_shutter:
-                t_offsets = (col_frac[slice_indices] * rev_time).astype(np.float32)
-            elif cfg.continuous_spin:
-                t_offsets = np.zeros(slice_indices.size, dtype=np.float32)
-            else:
-                t_offsets = np.zeros(slice_indices.size, dtype=np.float32)
-
-            ca = np.cos(az_slice)
-            sa = np.sin(az_slice)
-            dirs = dirs_sensor[slice_indices]
-            dirs_yawed = np.stack([
-                dirs[:, 0] * ca - dirs[:, 1] * sa,
-                dirs[:, 0] * sa + dirs[:, 1] * ca,
-                dirs[:, 2]
-            ], axis=1)
-
-            R_cam_np = _matrix_to_np3x3(cam_obj.matrix_world.to_3x3())
-            world_dirs_np = dirs_yawed @ sensor_to_cam_np.T @ R_cam_np.T
-            world_dirs = world_dirs_np / np.linalg.norm(world_dirs_np, axis=1, keepdims=True)
-            origin = cam_obj.matrix_world.translation
-
-            t0 = time.time()
-            res_slice = perform_raycasting(
-                scene,
-                depsgraph,
-                origin,
-                world_dirs,
-                ring_ids[slice_indices],
-                az_slice,
-                elev_rad[slice_indices],
-                t_offsets,
-                cfg,
-            )
-            dt = time.time() - t0
-            total_cast += slice_indices.size
-
-            if not res_slice:
-                continue
-
-            accum = _accumulate_results(accum, res_slice)
-    finally:
-        bpy.context.scene.frame_set(original_frame, subframe=original_subframe)
-
-    if accum is None:
-        elapsed = time.time() - frame_start
-        print(f"Frame {frame}: cast {total_cast} rays, hit 0 points ({elapsed:.2f}s)")
-        if cfg.continuous_spin:
-            phase_offset_rad = (phase_offset_rad + omega * frame_dt) % (2.0 * math.pi)
-        return 0, phase_offset_rad, None
-
-    res = _finalize_results(accum)
-    nhit = len(res["points_world"])
-    elapsed = time.time() - frame_start
-    print(f"Frame {frame}: cast {total_cast} rays, hit {nhit} points ({elapsed:.2f}s, scale={res['scale_used']:.5f})")
-
-    xform = world_to_frame_matrix(cam_obj, sensor_R, cfg.ply_frame)
-    if write_ply and cfg.save_ply:
-        save_ply(output_dir, frame, xform, res, cfg, binary=cfg.ply_binary)
-
-    if cfg.continuous_spin:
-        phase_offset_rad = (phase_offset_rad + omega * frame_dt) % (2.0 * math.pi)
-
-    return nhit, phase_offset_rad, res
-
-def parse_args(argv):
-    # Focused, minimal CLI for indoor LiDAR GT
-    p = argparse.ArgumentParser(description="Generate indoor LiDAR point clouds (raycast).")
-    p.add_argument("scene_path", help="Path to Blender .blend scene")
-    p.add_argument("--output_dir", default="outputs/infinigen_lidar", help="Output directory")
-    p.add_argument("--frames", default="1-48", help="Frame range, e.g. '1-48' or '1,5,10'")
-    p.add_argument("--camera", default=None, help="Camera object name")
-    p.add_argument("--preset", default="VLP-16", choices=LIDAR_PRESETS.keys(), help="LiDAR sensor preset")
-    p.add_argument("--force-azimuth-steps", type=int, default=None, help="Override azimuth columns")
-    p.add_argument("--ply-frame", choices=["sensor", "camera", "world"], default="sensor", help="PLY frame")
-    p.add_argument("--secondary", action="store_true", help="Enable pass-through secondary returns")
-    p.add_argument("--secondary-min-residual", type=float, default=0.05, help="Minimum residual transmission to spawn a secondary return")
-    p.add_argument("--secondary-ray-bias", type=float, default=5e-4, help="Offset (m) applied when spawning secondary rays past transmissive surfaces")
-    p.add_argument("--secondary-extinction", type=float, default=0.0, help="Extinction coefficient (1/m) for transmissive media")
-    p.add_argument("--secondary-min-cos", type=float, default=0.95, help="Minimum cosine incidence to spawn a pass-through secondary")
-    p.add_argument("--subframes", type=int, default=1, help="Pose resamples per frame for rolling shutter (>=1)")
-    p.add_argument("--rolling-subframes", type=int, dest="subframes", help=argparse.SUPPRESS)
-    p.add_argument("--ply-binary", action="store_true", help="Save binary PLY files")
-    p.add_argument("--auto-expose", action="store_true", help="Enable per-frame percentile exposure scaling for U8 intensity")
-    p.add_argument("--seed", type=int, default=None, help="Random seed")
-    return p.parse_args(argv)
-
-def parse_frame_list(spec: str):
-    # Parse frame specification into list of frame numbers
-    if "-" in spec:
-        a, b = map(int, spec.split("-"))
-        return list(range(a, b + 1))
-    return list(map(int, spec.split(",")))
-
-def main():
-    # Main execution function
-    script_args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
-    args = parse_args(script_args)
-
-    # Parse inputs and setup scene
-    frames = parse_frame_list(args.frames)
-    scene = setup_scene(args.scene_path)
-    cam = resolve_camera(args.camera)
-
-    # Seed RNGs if requested
-    if args.seed is not None:
-        try:
-            import random
-            random.seed(args.seed)
-            np.random.seed(args.seed % (2**32 - 1))
-        except Exception:
-            pass
-
-    # Create configuration
-    cfg = LidarConfig(
-        preset=args.preset,
-        force_azimuth_steps=args.force_azimuth_steps,
-        save_ply=True,
-        global_scale=1.0,
-        rpm=None,
-        continuous_spin=True,
-        rolling_shutter=True,
-        ply_frame=args.ply_frame,
-        auto_expose=args.auto_expose,
-        enable_secondary=args.secondary,
-        secondary_min_residual=args.secondary_min_residual,
-        secondary_ray_bias=args.secondary_ray_bias,
-        secondary_extinction=args.secondary_extinction,
-        secondary_min_cos=args.secondary_min_cos,
-        subframes=args.subframes,
-        ply_binary=args.ply_binary,
+    # Save PLY
+    out_ply = out_dir / f"lidar_frame_{frame:04d}.ply"
+    save_ply(
+        out_ply,
+        {
+            "points": pts_out.astype(np.float32),
+            "intensity": res["intensity"],
+            "ring": res["ring"],
+            "azimuth": res["azimuth"],
+            "elevation": res["elevation"],
+            "return_id": res["return_id"],
+            "num_returns": res["num_returns"],
+            "range_m": res.get("range_m"),
+            "cos_incidence": res.get("cos_incidence"),
+            "mat_class": res.get("mat_class"),
+            "reflectivity": res.get("reflectivity"),
+            "transmittance": res.get("transmittance"),
+        },
+        binary=getattr(cfg, "ply_binary", False),
     )
 
-    # Setup output directory and save configuration
-    os.makedirs(args.output_dir, exist_ok=True)
-    with open(os.path.join(args.output_dir, "lidar_config.json"), "w", encoding="utf-8") as f:
-        json.dump(cfg.to_dict(), f, indent=2)
+    # Per-frame metadata
+    meta = {"frame": frame, "points": int(pts_out.shape[0]), "scale_used": float(res.get("scale_used", 0.0))}
+    (out_dir / "frame_metadata.jsonl").write_text(
+        ((out_dir / "frame_metadata.jsonl").read_text() if (out_dir / "frame_metadata.jsonl").exists() else "")
+        + json.dumps(meta) + "\n"
+    )
 
-    # Prepare sensor configuration and ray patterns
-    sensor_R = sensor_to_camera_rotation()
-    precomp = generate_sensor_rays(cfg)
+    return FrameOutputs(out_ply, float(res.get("scale_used", 0.0)), int(pts_out.shape[0]))
 
-    # Initialize processing state
-    total_pts = 0
-    phase = 0.0
-    metadata = {"frames": {}}
-    traj = {}
+# ------------------------- top-level entrypoints -------------------------
 
-    fps = scene.render.fps / max(scene.render.fps_base, 1.0)
-    t_all = time.time()
-
-    print(f"Processing {len(frames)} frames with {cfg.preset} sensor...")
-    print(f"Configuration: {cfg}")
-
-    # Process each frame
-    for fr in frames:
-        nhit, phase, res = process_frame(
-            scene, cam, fr, fps, args.output_dir, cfg, sensor_R, precomp, phase,
-            write_ply=True,
-        )
-        total_pts += nhit
-
-        # Store camera trajectory
-        Mw = cam.matrix_world
-        t = Mw.translation
-        traj[fr] = {"t": [t[0], t[1], t[2]]}
-
-        metadata["frames"][fr] = {
-            "points": int(nhit), 
-            "scale_used": float(res["scale_used"]) if res else 1.0
-        }
-
-    # Save trajectory and metadata
-    with open(os.path.join(args.output_dir, "trajectory.json"), "w", encoding="utf-8") as f:
-        json.dump(traj, f, indent=2)
-    with open(os.path.join(args.output_dir, "frame_metadata.json"), "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2)
-
-    # Export timestamps (derived from FPS) and TUM-style poses
-    t0 = frames[0]
-    timestamps = [(fr - t0) / fps for fr in frames]
-    with open(os.path.join(args.output_dir, "timestamps.txt"), "w", encoding="utf-8") as f:
-        for ts in timestamps:
-            f.write(f"{ts:.6f}\n")
-    with open(os.path.join(args.output_dir, "poses_tum.txt"), "w", encoding="utf-8") as f:
-        for fr, ts in zip(frames, timestamps):
-            bpy.context.scene.frame_set(fr)
-            Mw = cam.matrix_world
-            loc = Mw.translation
-            quat = Mw.to_quaternion()  # (w, x, y, z)
-            # TUM: timestamp tx ty tz qx qy qz qw
-            f.write(
-                f"{ts:.6f} {loc[0]:.9f} {loc[1]:.9f} {loc[2]:.9f} {quat.x:.9f} {quat.y:.9f} {quat.z:.9f} {quat.w:.9f}\n"
-            )
-
-
-# Convenience entry point for running on the currently-loaded Blender scene.
-# Useful when integrating as a pipeline stage without re-opening the .blend.
-def run_on_current_scene(output_dir: str,
-                         frames: list[int],
-                         camera_name: str | None,
-                         cfg: LidarConfig):
-    scene = bpy.context.scene
-    cam = resolve_camera(camera_name)
-
-    os.makedirs(output_dir, exist_ok=True)
-    with open(os.path.join(output_dir, "lidar_config.json"), "w", encoding="utf-8") as f:
-        json.dump(cfg.to_dict(), f, indent=2)
-
-    sensor_R = sensor_to_camera_rotation()
-    precomp = generate_sensor_rays(cfg)
-    fps = scene.render.fps / max(scene.render.fps_base, 1.0)
-
-    total_pts = 0
-    phase = 0.0
-    metadata = {"frames": {}}
-    traj = {}
-
-    for fr in frames:
-        nhit, phase, res = process_frame(
-            scene, cam, fr, fps, output_dir, cfg, sensor_R, precomp, phase,
-            write_ply=True,
-        )
-        total_pts += nhit
-
-        Mw = cam.matrix_world
-        t = Mw.translation
-        traj[fr] = {"t": [t[0], t[1], t[2]]}
-
-        metadata["frames"][fr] = {
-            "points": int(nhit),
-            "scale_used": float(res["scale_used"]) if res else 1.0
-        }
-
-    with open(os.path.join(output_dir, "trajectory.json"), "w", encoding="utf-8") as f:
-        json.dump(traj, f, indent=2)
-    with open(os.path.join(output_dir, "frame_metadata.json"), "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2)
-
-    # timestamps and TUM poses for in-memory run
-    t0 = frames[0]
-    timestamps = [(fr - t0) / fps for fr in frames]
-    with open(os.path.join(output_dir, "timestamps.txt"), "w", encoding="utf-8") as f:
-        for ts in timestamps:
-            f.write(f"{ts:.6f}\n")
-    with open(os.path.join(output_dir, "poses_tum.txt"), "w", encoding="utf-8") as f:
-        for fr, ts in zip(frames, timestamps):
-            bpy.context.scene.frame_set(fr)
-            Mw = cam.matrix_world
-            loc = Mw.translation
-            quat = Mw.to_quaternion()
-            f.write(
-                f"{ts:.6f} {loc[0]:.9f} {loc[1]:.9f} {loc[2]:.9f} {quat.x:.9f} {quat.y:.9f} {quat.z:.9f} {quat.w:.9f}\n"
-            )
-
-    print(f"Frames: {len(frames)}, Total points: {total_pts:,}")
-    print(f"Output: {os.path.abspath(output_dir)}")
-
-
-def generate_for_scene(scene_path: str,
-                       output_dir: str,
-                       frames: list[int],
-                       camera_name: str | None = None,
-                       cfg_kwargs: dict | None = None):
-    """Programmatic helper for pipeline integration.
-
-    Opens the provided .blend, configures a LiDAR sensor from kwargs, and
-    runs the same emission logic as the CLI.
-    """
-    cfg_kwargs = cfg_kwargs or {}
-    setup_scene(scene_path)
+def run_on_current_scene(output_dir: str, frames: Sequence[int], camera_name: str, cfg_kwargs=None):
+    """Operate on the current open Blender scene."""
+    assert bpy is not None, "Must run inside Blender"
+    cfg_kwargs = dict(cfg_kwargs or {})
     cfg = LidarConfig(**cfg_kwargs)
-    run_on_current_scene(output_dir=output_dir, frames=frames, camera_name=camera_name, cfg=cfg)
-    return cfg
+
+    scene = bpy.context.scene
+    cam = resolve_camera(scene, camera_name)
+    out_dir = Path(output_dir)
+    _ensure_dir(out_dir)
+
+    # Save config used
+    (out_dir / "lidar_config.json").write_text(json.dumps(cfg.to_dict(), indent=2))
+
+    # Trajectory container
+    traj = {"frames": {}, "t": []}
+
+    # Seed
+    seed = int(cfg_kwargs.get("seed", 0)) if "seed" in cfg_kwargs else None
+    if seed is not None:
+        random.seed(seed); np.random.seed(seed)
+
+    for f in frames:
+        fo = process_frame(scene, cam, cfg, out_dir, f)
+        # Minimal trajectory (translation only)
+        t = list(map(float, cam.matrix_world.translation))
+        traj["frames"][str(f)] = {"points": fo.points, "scale_used": fo.scale_used}
+        traj["t"].append({"frame": f, "t": t})
+
+    # Write trajectory and timestamps
+    (out_dir / "trajectory.json").write_text(json.dumps(traj, indent=2))
+    ts_path = out_dir / "timestamps.txt"
+    with ts_path.open("w") as fh:
+        for f in frames:
+            fh.write(f"{_frame_time_seconds(scene, f):.9f}\n")
+
+def generate_for_scene(scene_path: str, output_dir: str, frames: Sequence[int], camera_name="Camera", cfg_kwargs=None):
+    """Open a .blend and run LiDAR generation."""
+    assert bpy is not None, "Must run inside Blender"
+    bpy.ops.wm.open_mainfile(filepath=str(scene_path))
+    run_on_current_scene(output_dir=output_dir, frames=frames, camera_name=camera_name, cfg_kwargs=cfg_kwargs)
+
+# -------------------------------- CLI --------------------------------
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser("Infinigen indoor LiDAR")
+    p.add_argument("scene_path", type=str, help="Path to .blend")
+    p.add_argument("--output_dir", type=str, default="outputs/infinigen_lidar", help="Output directory")
+    p.add_argument("--frames", type=str, default="1", help="e.g. '1-48' or '1,5,10'")
+    p.add_argument("--camera", type=str, default="Camera", help="Camera object name")
+    p.add_argument("--preset", type=str, default="VLP-16")
+    p.add_argument("--force-azimuth-steps", type=int, default=None)
+    p.add_argument("--ply-frame", type=str, default="sensor", choices=["sensor", "camera", "world"])
+    p.add_argument("--secondary", action="store_true")
+    p.add_argument("--secondary-min-residual", type=float, default=0.05)
+    p.add_argument("--secondary-ray-bias", type=float, default=5e-4)
+    p.add_argument("--secondary-min-cos", type=float, default=0.95)
+    p.add_argument("--secondary-merge-eps", type=float, default=0.0)
+    p.add_argument("--auto-expose", action="store_true")
+    p.add_argument("--global-scale", type=float, default=1.0)
+    p.add_argument("--default-opacity", type=float, default=1.0)
+    p.add_argument("--ply-binary", action="store_true")
+    p.add_argument("--seed", type=int, default=0)
+    return p.parse_args(argv)
+
+def main(argv: Sequence[str] | None = None):
+    args = parse_args(sys.argv[sys.argv.index("--") + 1:] if argv is None and "--" in sys.argv else (argv or sys.argv[1:]))
+
+    cfg_kwargs = dict(
+        preset=args.preset,
+        force_azimuth_steps=args.force_azimuth_steps,
+        ply_frame=args.ply_frame,
+        enable_secondary=bool(args.secondary),
+        secondary_min_residual=args.secondary_min_residual,
+        secondary_ray_bias=args.secondary_ray_bias,
+        secondary_min_cos=args.secondary_min_cos,
+        secondary_merge_eps=args.secondary_merge_eps,
+        auto_expose=bool(args.auto_expose),
+        global_scale=args.global_scale,
+        default_opacity=args.default_opacity,
+        ply_binary=bool(args.ply_binary),
+        prefer_ior=True,
+    )
+
+    frames = _parse_frames(args.frames)
+    generate_for_scene(
+        scene_path=args.scene_path,
+        output_dir=args.output_dir,
+        frames=frames,
+        camera_name=args.camera,
+        cfg_kwargs=cfg_kwargs,
+    )
 
 if __name__ == "__main__":
     main()
