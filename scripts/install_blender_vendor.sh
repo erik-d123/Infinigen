@@ -55,6 +55,7 @@ echo "[install_blender_vendor] Installing packages into vendor: $VENDOR_DIR"
   'numpy==1.26.4' \
   'scipy==1.11.4' \
   'scikit-learn==1.4.2' \
+  'scikit-image==0.21.0' \
   psutil pillow matplotlib \
   'imageio<2.32.0' \
   opencv-python-headless \
@@ -76,4 +77,3 @@ print('[verify] numpy', numpy.__version__, 'scipy', scipy.__version__, 'sklearn'
 }
 
 echo "[install_blender_vendor] Done."
-
