@@ -45,7 +45,14 @@ echo "[job] OUT_ROOT=$OUT_ROOT  TMPDIR=$TMPDIR"
   --seed 0 --task coarse \
   --output_folder "$OUT_ROOT/coarse" \
   -g singleroom.gin \
-  -p compose_indoors.terrain_enabled=False compose_indoors.restrict_single_supported_roomtype=True
+  -p compose_indoors.terrain_enabled=False compose_indoors.restrict_single_supported_roomtype=True \
+  -d
+
+# Guard: Indoors generation must create a scene.blend. If not, abort early so we don't run bake on a missing folder.
+if [[ ! -f "$OUT_ROOT/coarse/scene.blend" ]]; then
+  echo "[job] ERROR: Indoors coarse generation failed (missing $OUT_ROOT/coarse/scene.blend). Check Blender output above."
+  exit 2
+fi
 
 # 2) Bake exporter PBR textures to $OUT_ROOT/export/textures (BaseColor/Rough/Metal/Trans/Normal)
 bash scripts/bake_export_textures.sh "$OUT_ROOT/coarse" "$OUT_ROOT/export" 1024
