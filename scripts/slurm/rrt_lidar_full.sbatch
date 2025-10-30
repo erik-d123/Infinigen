@@ -13,6 +13,12 @@
 
 set -euo pipefail
 
+# Force our own debug log in addition to Slurm's StdOut
+DBG_LOG="/scratch/ed1783/infinigen_work/Infinigen/scripts/slurm/logs/rrt_lidar_${SLURM_JOB_ID}.debug.log"
+mkdir -p "$(dirname "$DBG_LOG")"
+exec > >(tee -a "$DBG_LOG") 2>&1
+set -x
+
 # Persistent locations (created by setup script)
 PERSIST="/u/ed1783/infinigen_persist"
 ENV_PATH="$PERSIST/conda/envs/infinigen"
@@ -32,18 +38,22 @@ echo "[job] JobID=$SLURM_JOB_ID  Host=$(hostname)"
 echo "[job] Repo=$REPO"
 echo "[job] Out=$OUT_ROOT  Scenes=$NUM_SCENES  Frames=${FRAME_RANGE_LO}-${FRAME_RANGE_HI}"
 
-# Load conda and activate env
-module load anaconda3 || true
-if ! command -v conda >/dev/null 2>&1; then
-  # shellcheck disable=SC1091
-  source /usr/local/anaconda3/etc/profile.d/conda.sh || true
+# Prefer absolute Python from the persistent env to avoid activation issues
+PY="$ENV_PATH/bin/python"
+if [[ ! -x "$PY" ]]; then
+  # Fallback to module + activate
+  module load anaconda3 || true
+  if ! command -v conda >/dev/null 2>&1; then
+    # shellcheck disable=SC1091
+    source /usr/local/anaconda3/etc/profile.d/conda.sh || true
+  fi
+  if command -v conda >/dev/null 2>&1; then
+    eval "$(conda shell.bash hook)"
+    conda activate "$ENV_PATH" || true
+    PY="$(command -v python || true)"
+  fi
 fi
-if command -v conda >/dev/null 2>&1; then
-  eval "$(conda shell.bash hook)"
-  conda activate "$ENV_PATH"
-else
-  echo "[job] WARNING: conda not found; proceeding"
-fi
+echo "[job] Using Python: ${PY:-not-found}"
 
 # Ensure we run from the repo root so launch_blender finds blender/blender symlink
 cd "$REPO"
@@ -52,12 +62,19 @@ cd "$REPO"
 export TMPDIR="${SLURM_TMPDIR:-/scratch/${USER}/tmp}"
 mkdir -p "$TMPDIR" "$OUT_ROOT"
 
-# Sanity prints
-python -c "import sys; print('[env] Python:', sys.version)"
+"$PY" -c "import sys; print('[env] Python:', sys.version); print('[env] EXE:', sys.executable)"
+# Check for bpy in the orchestrator env
+"$PY" - <<'PYEOF' || true
+try:
+    import bpy
+    print('[env] bpy OK', bpy.app.version_string)
+except Exception as e:
+    print('[env] WARNING: bpy import failed in orchestrator env:', repr(e))
+PYEOF
 blender/blender --version || true
 
 # Run Indoors + RRT + exporter bake (global) + LiDAR (camera-dependent)
-python -m infinigen.datagen.manage_jobs \
+"$PY" -m infinigen.datagen.manage_jobs \
   --output_folder "$OUT_ROOT" \
   --num_scenes "$NUM_SCENES" \
   --configs singleroom.gin rrt_cam_indoors.gin \
