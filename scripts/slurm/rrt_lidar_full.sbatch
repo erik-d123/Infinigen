@@ -92,6 +92,8 @@ blender/blender --version || true
       compose_indoors.restrict_single_supported_roomtype=True \
   --pipeline_overrides \
       get_cmd.driver_script='infinigen_examples.generate_indoors' \
-      "iterate_scene_tasks.frame_range=[${FRAME_RANGE_LO},${FRAME_RANGE_HI}]"
+      "iterate_scene_tasks.frame_range=[${FRAME_RANGE_LO},${FRAME_RANGE_HI}]" \
+      queue_export_bake_textures.submit_cmd=@local_submit_cmd \
+      queue_lidar.submit_cmd=@local_submit_cmd 
 
 echo "[job] Done. Outputs under: $OUT_ROOT"

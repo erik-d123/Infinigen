@@ -82,6 +82,8 @@ FRAME_RANGE_HI=200
   --pipeline_overrides \
       get_cmd.driver_script='infinigen_examples.generate_indoors' \
       "iterate_scene_tasks.frame_range=[${FRAME_RANGE_LO},${FRAME_RANGE_HI}]" \
+      queue_export_bake_textures.submit_cmd=@local_submit_cmd \
+      queue_lidar.submit_cmd=@local_submit_cmd \
       queue_export_bake_textures.image_res=1024
 
 echo "[job] Done. Outputs under: $OUT_ROOT"
