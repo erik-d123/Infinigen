@@ -5,16 +5,26 @@ set -euo pipefail
 echo "[lidar_rrt_job] Host: $(hostname)  User: $USER"
 echo "[lidar_rrt_job] Output: ${JOB_OUTPUT_FOLDER:-unset}  Scenes: ${JOB_NUM_SCENES:-unset}  Frames: ${JOB_FRAME_RANGE:-unset}  Seed: ${JOB_SEED:-unset}"
 
-# Activate environment
-source ~/.bashrc || true
-if conda env list | grep -q "${JOB_CONDA_ENV:-infinigen}"; then
-  conda activate "${JOB_CONDA_ENV:-infinigen}"
+# Some clusters' /etc/bashrc references variables that are unset under `set -u`.
+# Safely source user shell init without strict -u/-e so environment (conda/mamba) is available.
+if [ -f "$HOME/.bashrc" ]; then
+  set +u
+  set +e
+  export BASHRCSOURCED=1
+  source "$HOME/.bashrc"
+  set -e
+  set -u
+fi
+
+# Activate environment (conda or mamba)
+if command -v conda >/dev/null 2>&1 && conda env list | grep -q "${JOB_CONDA_ENV:-infinigen}"; then
+  conda activate "${JOB_CONDA_ENV:-infinigen}" || true
 elif command -v mamba >/dev/null 2>&1 && mamba env list | grep -q "${JOB_CONDA_ENV:-infinigen}"; then
-  mamba activate "${JOB_CONDA_ENV:-infinigen}"
+  mamba activate "${JOB_CONDA_ENV:-infinigen}" || true
 else
   echo "[lidar_rrt_job] WARNING: could not activate conda env ${JOB_CONDA_ENV:-infinigen}" >&2
 fi
-echo "[lidar_rrt_job] Conda env: $CONDA_DEFAULT_ENV"
+echo "[lidar_rrt_job] Conda env: ${CONDA_DEFAULT_ENV:-<none>}"
 
 # Ensure exporter deps are visible to Blender if needed
 if [ -d ".blender_site" ]; then
