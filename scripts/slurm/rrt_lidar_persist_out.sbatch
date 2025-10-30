@@ -65,6 +65,7 @@ FRAME_RANGE_HI=200
 "$PY" -m infinigen.datagen.manage_jobs \
   --output_folder "$OUT_ROOT" \
   --num_scenes "$NUM_SCENES" \
+  --overwrite \
   --configs singleroom.gin rrt_cam_indoors.gin \
   --pipeline_configs \
       local_256GB.gin \
