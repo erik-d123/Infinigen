@@ -137,8 +137,7 @@ mkdir -p "$VENDOR_DIR"
 
 # Verify vendor modules importable inside Blender
 log "Verifying Blender vendor modules (gin, coacd, trimesh, shapely, imageio, cv2)"
-python -m infinigen.launch_blender --background -m infinigen.tools.blendscript_path_append -- \
-  --python-expr "import sys,os;print('[verify] vendor_in_path=', any(p.endswith('/.blender_site') or p.endswith('/blender_vendor') for p in sys.path)); import gin;print('[verify] gin',gin.__version__); import coacd,trimesh,shapely,imageio; print('[verify] coacd OK, trimesh', getattr(trimesh,'__version__','?'),' shapely', getattr(shapely,'__version__','?'),' imageio', imageio.__version__); os.environ['OPENCV_IO_ENABLE_OPENEXR']='1'; import cv2; print('[verify] cv2', cv2.__version__)" || die "Blender vendor verification failed"
+"$BL_BIN_PERSIST" --background --python-expr "import sys,os; sys.path.insert(0, r'$VENDOR_DIR'); print('[verify] vendor_in_path=', any(p.endswith('/blender_vendor') or p.endswith('/.blender_site') for p in sys.path)); import gin; print('[verify] gin', getattr(gin,'__version__','?')); import coacd, trimesh, shapely, imageio; print('[verify] coacd OK, trimesh', getattr(trimesh,'__version__','?'),' shapely', getattr(shapely,'__version__','?'),' imageio', imageio.__version__); os.environ['OPENCV_IO_ENABLE_OPENEXR']='1'; import cv2; print('[verify] cv2', cv2.__version__)" || die "Blender vendor verification failed"
 
 #
 # 4) Clone repo to scratch and symlink Blender + vendor
