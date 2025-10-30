@@ -1,4 +1,3 @@
 iterate_scene_tasks.global_tasks = [
-    {'name': 'export_bake', 'func': @queue_export_bake_textures},
+    {'name': 'exportbake', 'func': @queue_export_bake_textures},
 ]
-
