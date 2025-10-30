@@ -151,8 +151,8 @@ else
 fi
 
 cd "$REPO_DIR"
-mkdir -p infinigen/blender
-ln -sfn "$BL_BIN_PERSIST" infinigen/blender/blender
+mkdir -p blender
+ln -sfn "$BL_BIN_PERSIST" blender/blender
 ln -sfn "$VENDOR_DIR" .blender_site
 
 #
