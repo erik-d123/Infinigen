@@ -69,6 +69,7 @@ FRAME_RANGE_HI=200
   --configs singleroom.gin rrt_cam_indoors.gin \
   --pipeline_configs \
       local_256GB.gin \
+      infinigen/datagen/configs/data_schema/monocular_video.gin \
       indoor_background_configs.gin \
       blender_gt.gin \
       infinigen/datagen/configs/gt_options/lidar_bake_textures.gin \
