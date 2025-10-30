@@ -38,12 +38,13 @@ Optional positional arguments (in order):
 ```bash
 python -m infinigen.launch_blender -m lidar.lidar_generator -- \
   path/to/scene.blend \
+  --export-bake-dir path/to/export/textures \
   --output_dir outputs/my_scan \
   --frames 1-48 \
   --camera Camera \
   --preset VLP-16 \
   --ply-frame sensor \
-  --force-azimuth-steps 1800 \
+  --ply-binary \
   --seed 0
 ```
 
@@ -70,11 +71,10 @@ Key arguments:
 - Sensor and resolution
   - `--preset`: Sensor preset loaded from `lidar_config.py`
   - `--force-azimuth-steps`: Explicit azimuth column count
-- Export PBR usage (streamlined)
-  - `--export-bake-dir`: Folder with baked textures to sample (auto-detected when present). Bakes are required; LiDAR does not evaluate node graphs at runtime.
+- Export PBR usage (required)
+  - `--export-bake-dir`: Folder with baked textures to sample (auto-detected when present next to the scene). Bakes are required; LiDAR does not evaluate node graphs at runtime.
 - Radiometry
-  - `--secondary`: Enable pass‑through secondary returns for transmissive surfaces
-  - `--secondary-min-cos`: Minimum cosine of incidence needed to spawn a pass‑through return (default 0.95)
+  - `--secondary`: Enable pass‑through secondary returns for transmissive surfaces (uses defaults)
   - `--auto-expose`: Enable percentile‑based per‑frame scaling for the `intensity` column
 - Misc
   - `--ply-binary`: Emit binary PLY files instead of ASCII
