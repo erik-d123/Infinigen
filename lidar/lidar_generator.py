@@ -301,26 +301,20 @@ def generate_for_scene(scene_path: str, output_dir: str, frames: Sequence[int], 
     run_on_current_scene(output_dir=output_dir, frames=frames, camera_name=camera_name, cfg_kwargs=cfg_kwargs)
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser("Infinigen indoor LiDAR")
+    p = argparse.ArgumentParser("Infinigen indoor LiDAR (baked-only)")
     p.add_argument("scene_path", type=str, help="Path to .blend")
     p.add_argument("--output_dir", type=str, default="outputs/infinigen_lidar", help="Output directory")
     p.add_argument("--frames", type=str, default="1", help="e.g. '1-48' or '1,5,10'")
     p.add_argument("--camera", type=str, default="Camera", help="Camera object name")
-    p.add_argument("--preset", type=str, default="VLP-16")
-    p.add_argument("--force-azimuth-steps", type=int, default=None)
-    p.add_argument("--ply-frame", type=str, default="sensor", choices=["sensor", "camera", "world"])
-    p.add_argument("--secondary", action="store_true")
-    p.add_argument("--secondary-min-residual", type=float, default=0.05)
-    p.add_argument("--secondary-ray-bias", type=float, default=5e-4)
-    p.add_argument("--secondary-min-cos", type=float, default=0.95)
-    p.add_argument("--secondary-merge-eps", type=float, default=0.0)
-    p.add_argument("--auto-expose", action="store_true")
-    p.add_argument("--global-scale", type=float, default=1.0)
-    p.add_argument("--default-opacity", type=float, default=1.0)
-    p.add_argument("--ply-binary", action="store_true")
+    p.add_argument("--preset", type=str, default="VLP-16", help="Sensor preset")
+    p.add_argument("--force-azimuth-steps", type=int, default=None, help="Override azimuth columns")
+    p.add_argument("--ply-frame", type=str, default="sensor", choices=["sensor", "camera", "world"], help="PLY output frame")
+    p.add_argument("--ply-binary", action="store_true", help="Write binary PLY")
+    p.add_argument("--auto-expose", action="store_true", help="Enable per-frame intensity auto-exposure (8-bit)")
+    p.add_argument("--secondary", action="store_true", help="Enable single pass-through for transmissive surfaces")
     p.add_argument("--seed", type=int, default=0)
-    # Material sampling controls
-    p.add_argument("--export-bake-dir", type=str, default=None)
+    # Baked textures directory (required); auto-detected when present next to the scene
+    p.add_argument("--export-bake-dir", type=str, default=None, help="Folder containing exporter-baked PBR textures")
     return p.parse_args(argv)
 
 def main(argv: Sequence[str] | None = None):
@@ -331,13 +325,7 @@ def main(argv: Sequence[str] | None = None):
         force_azimuth_steps=args.force_azimuth_steps,
         ply_frame=args.ply_frame,
         enable_secondary=bool(args.secondary),
-        secondary_min_residual=args.secondary_min_residual,
-        secondary_ray_bias=args.secondary_ray_bias,
-        secondary_min_cos=args.secondary_min_cos,
-        secondary_merge_eps=args.secondary_merge_eps,
         auto_expose=bool(args.auto_expose),
-        global_scale=args.global_scale,
-        default_opacity=args.default_opacity,
         ply_binary=bool(args.ply_binary),
         prefer_ior=True,
         # Material sampling: require exporter bakes; never bake here
