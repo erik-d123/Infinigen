@@ -197,7 +197,6 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None, cfg=
                 obj, depsgraph, poly_index, hit_world,
                 res=int(getattr(cfg, "bake_resolution", 1024)),
                 export_bake_dir=export_dir, use_export_bakes=True,
-                use_normals=bool(getattr(cfg, "use_baked_normals", True)),
             )
             if sampled:
                 for k in [
@@ -205,59 +204,10 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None, cfg=
                     "shading_normal_world",
                 ]:
                     if k in sampled and sampled[k] is not None:
-                        # Respect config to skip baked normal usage
-                        if k == "shading_normal_world" and not bool(getattr(cfg, "use_baked_normals", True)):
-                            continue
                         props[k] = sampled[k]
         except Exception:
             pass
 
-    # Optional fallback to direct image textures only when enabled
-    if hit_world is not None and cfg is not None and bool(getattr(cfg, "enable_image_fallback", False)):
-        try:
-            from lidar.fallback_sampler import apply_image_overrides as _apply_image_overrides
-            _apply_image_overrides(
-                obj=obj,
-                depsgraph=depsgraph,
-                bsdf=bsdf,
-                poly_index=poly_index,
-                hit_world=hit_world,
-                props=props,
-                use_normals=bool(getattr(cfg, "use_baked_normals", True)),
-            )
-            # If base_color was not overridden (e.g. no UVs), but Base Color is linked to an image,
-            # sample its first pixel as a pragmatic fallback (works for 1x1 test textures)
-            try:
-                # Prefer directly linked image
-                bc_sock = bsdf.inputs.get("Base Color")
-                tex_node = None
-                if bc_sock is not None and bc_sock.is_linked:
-                    cand = bc_sock.links[0].from_node
-                    if getattr(cand, "type", "") == "TEX_IMAGE":
-                        tex_node = cand
-                # Otherwise, fall back to any TEX_IMAGE in the material (common in test scenes)
-                if tex_node is None:
-                    for n in bsdf.id_data.nodes:  # node_tree.nodes
-                        if getattr(n, "type", "") == "TEX_IMAGE" and getattr(n, "image", None) is not None:
-                            tex_node = n
-                            break
-                if tex_node is not None and getattr(tex_node, "image", None) is not None:
-                    img = tex_node.image
-                    w, h = img.size
-                    if w > 0 and h > 0:
-                        px = np.array(img.pixels[:], dtype=np.float32)
-                        r, g, b = float(px[0]), float(px[1]), float(px[2])
-                        props["base_color"] = (
-                            max(0.0, min(1.0, r)),
-                            max(0.0, min(1.0, g)),
-                            max(0.0, min(1.0, b)),
-                        )
-            except Exception:
-                pass
-        except Exception:
-            pass
-        if not bool(getattr(cfg, "use_baked_normals", True)):
-            props.pop("shading_normal_world", None)
 
     # Glass hint heuristic for non-opaque transmissive
     _op = props["opacity"] if props.get("opacity", None) is not None else _CFG_DEFAULT_OPACITY
@@ -316,7 +266,8 @@ def compute_intensity(props: Dict, cos_i: float, R: float, cfg):
     F = _luma(F_rgb)
 
     # Specular lobe (dielectrics honor specular_scale; metals ignore Principled Specular)
-    R_spec = F * (max(0.0, 1.0 - rough) ** 2) * (max(0.0, 1.0 - trans_rough) ** 2)
+    # Specular amplitude shaped by roughness (remove transmission_roughness suppression for dielectrics)
+    R_spec = F * (max(0.0, 1.0 - rough) ** 2)
     if metallic <= 0.0:
         R_spec *= specular_scale
     R_spec = max(0.0, min(1.0, R_spec))

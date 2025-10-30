@@ -98,7 +98,7 @@ def test_alpha_clip_culls_hits(tmp_path: Path):
         assert rec.get("points", 0) == 0
 
 
-def test_use_baked_normals_toggle_controls_shading_normal(tmp_path: Path):
+def test_baked_normal_produces_shading_normal(tmp_path: Path):
     # Build a simple plane with a normal map wired to Principled Normal input
     scene = _reset_scene()
     plane, mat, bsdf = _make_plane_with_principled()
@@ -128,17 +128,9 @@ def test_use_baked_normals_toggle_controls_shading_normal(tmp_path: Path):
     hit, loc, nrm, face_index, obj, _ = scene.ray_cast(deps, ray_origin, ray_dir, distance=10.0)
     assert hit and obj == plane
 
-    # With normals enabled, extractor should provide shading_normal_world
+    # In baked-only mode, extractor provides shading_normal_world only when a baked NormalTS map is available.
     from lidar.lidar_config import LidarConfig
-    cfg_on = LidarConfig()
-    cfg_on.enable_image_fallback = True
-    cfg_on.use_baked_normals = True
-    props_on = extract_material_properties(plane, int(face_index), deps, hit_world=loc, cfg=cfg_on)
-    assert "shading_normal_world" in props_on
-
-    # With normals disabled, extractor should not set shading_normal_world
-    cfg_off = LidarConfig()
-    cfg_off.enable_image_fallback = True
-    cfg_off.use_baked_normals = False
-    props_off = extract_material_properties(plane, int(face_index), deps, hit_world=loc, cfg=cfg_off)
-    assert "shading_normal_world" not in props_off
+    cfg = LidarConfig()
+    props = extract_material_properties(plane, int(face_index), deps, hit_world=loc, cfg=cfg)
+    # No export_bake_dir provided in this test, so no baked normal is available.
+    assert "shading_normal_world" not in props

@@ -50,17 +50,9 @@ class LidarConfig:
     # Internal/derived store for arbitrary extras
     extras: Dict[str, Any] = field(default_factory=dict)
 
-    # Material sampling strategy (prefer Infinigen export bakes; never rebake here)
+    # Material sampling (prefer Infinigen export bakes; never rebake here)
     use_export_bakes: bool = True                       # use textures baked by infinigen/tools/export.py
-    export_bake_dir: Optional[str] = None               # path to baked textures folder (auto-detected or provided)
-    # Control whether to use baked/tangent-space normal maps for shading incidence
-    use_baked_normals: bool = True
-    # Optional: allow direct-texture fallback sampling from Principled image links
-    enable_image_fallback: bool = False
-    # Legacy flags (no-op): retained for compatibility; LiDAR no longer triggers baking itself
-    bake_pbr: bool = False                              # deprecated (LiDAR does not bake)
-    bake_resolution: int = 1024                         # deprecated
-    bake_normals: bool = True                           # deprecated
+    export_bake_dir: Optional[str] = None               # path to baked textures folder (required)
 
     def __post_init__(self):
         p = LIDAR_PRESETS.get(self.preset)

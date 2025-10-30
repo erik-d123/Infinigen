@@ -14,7 +14,7 @@ PRESET="VLP-16"   # VLP-16 | HDL-32E | HDL-64E | OS1-128
 # Output frame for PLY (sensor recommended for LiDAR POV)
 PLY_FRAME="sensor"     # sensor | camera | world
 
-# Let user optionally supply: SCENE_PATH OUTPUT_DIR FRAMES CAMERA PRESET [FORCE_AZIMUTH_STEPS] [--no-bake-normals]
+# Let user optionally supply: SCENE_PATH OUTPUT_DIR FRAMES CAMERA PRESET [FORCE_AZIMUTH_STEPS]
 OUTPUT_DIR=""  # computed later unless provided
 if [ $# -ge 1 ]; then SCENE_PATH="$1"; fi
 if [ $# -ge 2 ]; then OUTPUT_DIR="$2"; fi
@@ -25,9 +25,6 @@ if [ $# -ge 5 ]; then PRESET="$5"; fi
 FORCE_AZIMUTH_STEPS=""
 if [ $# -ge 6 ]; then FORCE_AZIMUTH_STEPS="$6"; fi
 
-# Optional: disable normal baking to speed up (pass exactly "--no-bake-normals")
-NO_BAKE_NORMALS=""
-if [ $# -ge 7 ]; then NO_BAKE_NORMALS="$7"; fi
 
 # Build default OUTPUT_DIR (after any overrides) if not provided
 if [ -z "${OUTPUT_DIR}" ]; then
@@ -57,7 +54,6 @@ python -m infinigen.launch_blender -m lidar.lidar_generator -- \
   --preset "$PRESET" \
   $([ -n "$FORCE_AZIMUTH_STEPS" ] && echo "--force-azimuth-steps $FORCE_AZIMUTH_STEPS") \
   --ply-frame "$PLY_FRAME" \
-  $NO_BAKE_NORMALS \
   --seed 0
 
 echo "Data generation complete!"

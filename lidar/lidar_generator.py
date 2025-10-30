@@ -245,7 +245,7 @@ def run_on_current_scene(output_dir: str, frames: Sequence[int], camera_name: st
     cfg_kwargs = dict(cfg_kwargs or {})
     cfg = LidarConfig(**cfg_kwargs)
 
-    # Prefer Infinigen export-baked textures by default if not explicitly provided
+    # Require Infinigen export-baked textures; try to auto-detect if not provided
     try:
         if getattr(cfg, "use_export_bakes", True) and not getattr(cfg, "export_bake_dir", None):
             blend_path = Path(bpy.data.filepath) if bpy and bpy.data and bpy.data.filepath else None
@@ -256,6 +256,13 @@ def run_on_current_scene(output_dir: str, frames: Sequence[int], camera_name: st
                     cfg.export_bake_dir = str(export_dir)
     except Exception:
         pass
+
+    if getattr(cfg, "use_export_bakes", True):
+        exp = getattr(cfg, "export_bake_dir", None)
+        if not exp or not Path(exp).exists():
+            raise FileNotFoundError(
+                "LiDAR requires exporter-baked PBR textures. Provide --export-bake-dir or run scripts/bake_export_textures.sh"
+            )
 
     scene = bpy.context.scene
     cam = resolve_camera(scene, camera_name)
@@ -312,10 +319,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument("--default-opacity", type=float, default=1.0)
     p.add_argument("--ply-binary", action="store_true")
     p.add_argument("--seed", type=int, default=0)
-    # Baking/material sampling controls
-    p.add_argument("--no-bake-pbr", action="store_true")
-    p.add_argument("--bake-resolution", type=int, default=None)
-    p.add_argument("--no-bake-normals", action="store_true")
+    # Material sampling controls
     p.add_argument("--export-bake-dir", type=str, default=None)
     return p.parse_args(argv)
 
@@ -336,10 +340,9 @@ def main(argv: Sequence[str] | None = None):
         default_opacity=args.default_opacity,
         ply_binary=bool(args.ply_binary),
         prefer_ior=True,
-        # Material sampling: prefer exporter bakes; never bake here
-        use_export_bakes=not bool(args.no_bake_pbr),
+        # Material sampling: require exporter bakes; never bake here
+        use_export_bakes=True,
         export_bake_dir=args.export_bake_dir,
-        use_baked_normals=not bool(args.no_bake_normals) if hasattr(args, 'no_bake_normals') else True,
     )
 
     frames = _parse_frames(args.frames)

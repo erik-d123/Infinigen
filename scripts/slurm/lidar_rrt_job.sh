@@ -70,7 +70,7 @@ SCENES="${JOB_NUM_SCENES:-1}"
 FRAMES="${JOB_FRAME_RANGE:-1-200}"
 SEED="${JOB_SEED:-0}"
 OCMESH="${JOB_ENABLE_OCMESH:-false}"
-NO_BAKE_N="${JOB_NO_BAKE_NORMALS:-false}"
+NO_BAKE_N="false"
 
 mkdir -p "$OUT_DIR"
 
@@ -93,10 +93,6 @@ PIPELINE_OVERRIDES=(
 )
 
 LIDAR_OVERRIDES=()
-if [ "$NO_BAKE_N" = "true" ]; then
-  # Disable normal usage inside LiDAR
-  LIDAR_OVERRIDES+=( "lidar.lidar_config.LidarConfig.use_baked_normals=False" )
-fi
 
 set -x
 "$PY_BIN" -m infinigen.datagen.manage_jobs \

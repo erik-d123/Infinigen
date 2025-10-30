@@ -6,7 +6,7 @@
 #     [--scenes N] [--frames 1-200] [--seed 0] \
 #     [--out outputs/video_dynamic_indoor] \
 #     [--time 01-00:00:00] [--account ACC] [--partition PART] \
-#     [--env infinigen] [--conda-module anaconda3] [--python-bin python3.10] [--ocmesh true|false] [--no-bake-normals]
+#     [--env infinigen] [--conda-module anaconda3] [--python-bin python3.10] [--ocmesh true|false]
 #
 # gpu_type: one of 1080, 2080, 3090, 6000, a40, a6000
 
@@ -56,7 +56,6 @@ while [[ $# -gt 0 ]]; do
     --conda-module) CONDA_MOD_OPT="--export=JOB_CONDA_MODULE=$2"; shift 2;;
     --python-bin) PY_BIN_OPT="--export=JOB_PYTHON_BIN=$2"; shift 2;;
     --ocmesh) ENABLE_OCMESH="$2"; shift 2;;
-    --no-bake-normals) NO_BAKE_NORMALS="true"; shift 1;;
     *) echo "Unknown option: $1" >&2; exit 1;;
   esac
 done
@@ -114,6 +113,5 @@ JOB_NUM_SCENES="$NUM_SCENES",\
 JOB_FRAME_RANGE="$FRAME_RANGE",\
 JOB_SEED="$SEED",\
 JOB_ENABLE_OCMESH="$ENABLE_OCMESH",\
-JOB_NO_BAKE_NORMALS="$NO_BAKE_NORMALS",\
 JOB_CONDA_ENV="$CONDA_ENV" \
   scripts/slurm/lidar_rrt_job.sh

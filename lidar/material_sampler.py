@@ -17,13 +17,26 @@ from lidar.mesh_uv import compute_barycentric as _barycentric  # reuse
 from lidar.mesh_uv import hit_uv as _hit_uv  # reuse
 
 
-def _sample_px(px: np.ndarray, uv: Tuple[float, float]) -> np.ndarray:
+def _sample_px_bilinear(px: np.ndarray, uv: Tuple[float, float]) -> np.ndarray:
+    """Bilinear sample RGBA at uv in [0,1)."""
     h, w, _ = px.shape
+    if w <= 0 or h <= 0:
+        return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
     u = float(uv[0]) % 1.0
     v = float(uv[1]) % 1.0
-    ix = int(min(w - 1, max(0, round(u * (w - 1)))))
-    iy = int(min(h - 1, max(0, round(v * (h - 1)))))
-    return px[iy, ix]
+    x = u * (w - 1)
+    y = v * (h - 1)
+    x0 = int(np.floor(x)); x1 = min(w - 1, x0 + 1)
+    y0 = int(np.floor(y)); y1 = min(h - 1, y0 + 1)
+    dx = x - x0; dy = y - y0
+    c00 = px[y0, x0]
+    c10 = px[y0, x1]
+    c01 = px[y1, x0]
+    c11 = px[y1, x1]
+    c0 = c00 * (1.0 - dx) + c10 * dx
+    c1 = c01 * (1.0 - dx) + c11 * dx
+    c = c0 * (1.0 - dy) + c1 * dy
+    return c
 
 
 class MaterialSampler:
@@ -72,8 +85,7 @@ class MaterialSampler:
         return out
 
     def sample_properties(self, obj, depsgraph, poly_index: int, hit_world, res: int,
-                          export_bake_dir: Optional[str] = None, use_export_bakes: bool = True,
-                          use_normals: bool = True) -> Optional[Dict]:
+                          export_bake_dir: Optional[str] = None, use_export_bakes: bool = True) -> Optional[Dict]:
         if bpy is None:
             return None
         eval_obj = obj.evaluated_get(depsgraph)
@@ -98,12 +110,12 @@ class MaterialSampler:
                 px = baked.get(name)
                 if px is None:
                     return default
-                return float(_sample_px(px, uv)[0])
+                return float(_sample_px_bilinear(px, uv)[0])
             def pick_rgb(name: str, default=(1.0,1.0,1.0)):
                 px = baked.get(name)
                 if px is None:
                     return default
-                r, g, b, _ = _sample_px(px, uv)
+                r, g, b, _ = _sample_px_bilinear(px, uv)
                 return (float(r), float(g), float(b))
 
             out['base_color'] = pick_rgb('Base Color', (1.0, 1.0, 1.0))
@@ -112,9 +124,9 @@ class MaterialSampler:
             out['transmission'] = pick_scalar('Transmission', 0.0)
 
             # Shading normal (tangent-space normal map) if present and enabled
-            n_px = baked.get('NormalTS') if use_normals else None
+            n_px = baked.get('NormalTS')
             if n_px is not None:
-                r, g, b, _ = _sample_px(n_px, uv)
+                r, g, b, _ = _sample_px_bilinear(n_px, uv)
                 nx = 2.0 * float(r) - 1.0
                 ny = 2.0 * float(g) - 1.0
                 nz = 2.0 * float(b) - 1.0

@@ -4,7 +4,7 @@ This tool generates LiDAR ground truth for Infinigen indoor scenes with indoor-f
 
 ## Features
 
-- Uses Infinigen export PBR bakes by default (UV + texture maps from procedural materials): Albedo/Base Color, Roughness, Metallic, Transmission, Normal.
+- Uses Infinigen export PBR bakes (required): UV + texture maps from procedural materials: Albedo/Base Color, Roughness, Metallic, Transmission, Normal.
 - Energy‑preserving reflectivity model (Lambert diffuse + Schlick specular) with metallic mixing and roughness shaping.
 - Transmission reduces opaque reflectance and enables a single pass‑through secondary; alpha is coverage (CLIP culls below threshold; BLEND/HASHED uses coverage).
 - Indoor‑oriented sensor presets: `VLP-16`, `HDL-32E`, `HDL-64E`, `OS1-128`.
@@ -44,7 +44,6 @@ python -m infinigen.launch_blender -m lidar.lidar_generator -- \
   --preset VLP-16 \
   --ply-frame sensor \
   --force-azimuth-steps 1800 \
-  --no-bake-normals \
   --seed 0
 ```
 
@@ -72,10 +71,7 @@ Key arguments:
   - `--preset`: Sensor preset loaded from `lidar_config.py`
   - `--force-azimuth-steps`: Explicit azimuth column count
 - Export PBR usage (streamlined)
-  - `--no-bake-pbr`: Disable use of baked PBR maps entirely.
-  - `--export-bake-dir`: Folder with baked textures to sample (defaults to detected scene textures when present)
-  - `--no-bake-normals`: Keep baked colors/scalars but skip normal map usage (good quality/speed tradeoff)
-  - `enable_image_fallback` (config): Off by default; when enabled, samples direct Principled Image textures to fill gaps (slower, only if you truly need it).
+  - `--export-bake-dir`: Folder with baked textures to sample (auto-detected when present). Bakes are required; LiDAR does not evaluate node graphs at runtime.
 - Radiometry
   - `--secondary`: Enable pass‑through secondary returns for transmissive surfaces
   - `--secondary-min-cos`: Minimum cosine of incidence needed to spawn a pass‑through return (default 0.95)
@@ -99,19 +95,16 @@ Parameters:
 
 ## Material Realization & Intensity
 
-By default, LiDAR uses the same PBR maps that Infinigen generates for export (UV + texture baking of procedural materials):
+LiDAR uses the same PBR maps that Infinigen generates for export (UV + texture baking of procedural materials):
 
 - PBR inputs: Albedo/Base Color (RGB), Roughness (R), Metallic (R), Transmission (R), Normal (tangent‑space RGB). Alpha follows Blender semantics (CLIP threshold vs BLEND/HASHED coverage).
-- Shading normal: The baked tangent normal is converted to world space with TBN and used for cos(incidence); backfaces are flipped for correct incidence.
-- Reflectivity: Lambert diffuse + Schlick specular with metallic mixing and roughness shaping; optional small clearcoat lobe. Transmission reduces opaque reflectance and supplies residual for a single pass‑through secondary.
+- Shading normal: The baked tangent normal is converted to world space with TBN and used for cos(incidence) when present; otherwise the geometric normal is used. Backfaces are flipped for correct incidence.
+- Reflectivity: Lambert diffuse + Schlick specular with metallic mixing and roughness shaping. Transmission reduces opaque reflectance and supplies residual for a single pass‑through secondary.
 - Intensity: `intensity` is 8‑bit (optional percentile auto‑exposure); `reflectivity` is a float channel for training.
 
-### Two Modes
+### Requirements
 
-- Export‑bake mode (recommended): bake once per scene (or reuse any prior export) and point `--export-bake-dir` at the textures folder. Fast and consistent: runtime LiDAR only samples textures at UVs.
-- Lightweight/no‑bake mode (fastest iteration):
-  - `--no-bake-pbr`: disables use of exporter bakes. Optionally enable `enable_image_fallback` in config to sample direct Image textures.
-  - `--no-bake-normals`: keep baked colors/scalars but skip tangent normal (use geometric normal incidence).
+- Export‑baked textures are required. Bake once per scene (or reuse any prior export) and point `--export-bake-dir` to the textures folder. Runtime LiDAR only samples these textures at UVs; it does not evaluate node graphs.
 
 
 ## Outputs
@@ -177,9 +170,7 @@ python -m infinigen.launch_blender --background --python lidar/lidar_generator.p
   --frames 1-16 --camera Camera --preset VLP-16
 ```
 
-2) Or, run without pre‑bake:
-- `--no-bake-pbr`: sample direct textures/defaults (fastest, less accurate on complex materials).
-- `--no-bake-normals`: skip normal maps (good quality/speed tradeoff).
+2) Bakes are required: LiDAR does not evaluate node graphs at runtime. Always provide `--export-bake-dir` (or run the exporter task/bake script beforehand).
 
 Expected bake names: `{object_clean_name}_{DIFFUSE|ROUGHNESS|NORMAL|METAL|TRANSMISSION}.png`.
 
