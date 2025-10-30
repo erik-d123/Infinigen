@@ -17,6 +17,23 @@ if [ -f "$HOME/.bashrc" ]; then
 fi
 
 # Activate environment (conda or mamba)
+# Try to make `conda activate` available even if ~/.bashrc didn't set it up
+if ! command -v conda >/dev/null 2>&1; then
+  if command -v module >/dev/null 2>&1; then
+    module load "${JOB_CONDA_MODULE:-anaconda3}" || true
+  fi
+fi
+if command -v conda >/dev/null 2>&1; then
+  # Initialize conda shell function if needed
+  eval "$(conda shell.bash hook)" 2>/dev/null || {
+    base_dir="$(conda info --base 2>/dev/null || echo '')"
+    if [ -n "$base_dir" ] && [ -f "$base_dir/etc/profile.d/conda.sh" ]; then
+      # shellcheck disable=SC1090
+      . "$base_dir/etc/profile.d/conda.sh"
+    fi
+  }
+fi
+
 if command -v conda >/dev/null 2>&1 && conda env list | grep -q "${JOB_CONDA_ENV:-infinigen}"; then
   conda activate "${JOB_CONDA_ENV:-infinigen}" || true
 elif command -v mamba >/dev/null 2>&1 && mamba env list | grep -q "${JOB_CONDA_ENV:-infinigen}"; then
@@ -26,6 +43,23 @@ else
 fi
 echo "[lidar_rrt_job] Conda env: ${CONDA_DEFAULT_ENV:-<none>}"
 
+# Try environment modules for Python 3.10+ if conda was unavailable
+if ! command -v python >/dev/null 2>&1 || ! python -c 'import sys; exit(0 if sys.version_info[:2] >= (3,10) else 1)'; then
+  if [ -f /etc/profile.d/modules.sh ]; then
+    # shellcheck disable=SC1091
+    . /etc/profile.d/modules.sh || true
+  fi
+  if command -v module >/dev/null 2>&1; then
+    # Allow override of module name, default to a common python/3.10 module
+    PY_MOD="${JOB_PYTHON_MODULE:-python/3.10}"
+    module load "$PY_MOD" || true
+  fi
+fi
+
+# Select python binary (env override allowed)
+PY_BIN="${JOB_PYTHON_BIN:-python}"
+echo "[lidar_rrt_job] Using Python: $(command -v "$PY_BIN" || echo not-found)"
+"$PY_BIN" --version || true
 # Ensure exporter deps are visible to Blender if needed
 if [ -d ".blender_site" ]; then
   export PYTHONPATH="$(pwd)/.blender_site:${PYTHONPATH:-}"
@@ -65,7 +99,7 @@ if [ "$NO_BAKE_N" = "true" ]; then
 fi
 
 set -x
-python -m infinigen.datagen.manage_jobs \
+"$PY_BIN" -m infinigen.datagen.manage_jobs \
   --output_folder "$OUT_DIR" \
   --num_scenes "$SCENES" \
   --specific_seed "$SEED" \

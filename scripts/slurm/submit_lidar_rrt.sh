@@ -6,7 +6,7 @@
 #     [--scenes N] [--frames 1-200] [--seed 0] \
 #     [--out outputs/video_dynamic_indoor] \
 #     [--time 01-00:00:00] [--account ACC] [--partition PART] \
-#     [--env infinigen] [--ocmesh true|false] [--no-bake-normals]
+#     [--env infinigen] [--conda-module anaconda3] [--python-bin python3.10] [--ocmesh true|false] [--no-bake-normals]
 #
 # gpu_type: one of 1080, 2080, 3090, 6000, a40, a6000
 
@@ -32,6 +32,8 @@ SLURM_PARTITION_OPT=""
 CONDA_ENV=${INFINIGEN_CONDA_ENV:-"infinigen"}
 ENABLE_OCMESH=${ENABLE_OCMESH:-"false"}
 NO_BAKE_NORMALS=${NO_BAKE_NORMALS:-"false"}
+PY_BIN_OPT=""
+CONDA_MOD_OPT=""
 
 # Ensure sbatch is available (must run on cluster login node)
 if ! command -v sbatch >/dev/null 2>&1; then
@@ -51,6 +53,8 @@ while [[ $# -gt 0 ]]; do
     --account) SLURM_ACCOUNT_OPT="--account=$2"; shift 2;;
     --partition) SLURM_PARTITION_OPT="--partition=$2"; shift 2;;
     --env) CONDA_ENV="$2"; shift 2;;
+    --conda-module) CONDA_MOD_OPT="--export=JOB_CONDA_MODULE=$2"; shift 2;;
+    --python-bin) PY_BIN_OPT="--export=JOB_PYTHON_BIN=$2"; shift 2;;
     --ocmesh) ENABLE_OCMESH="$2"; shift 2;;
     --no-bake-normals) NO_BAKE_NORMALS="true"; shift 1;;
     *) echo "Unknown option: $1" >&2; exit 1;;
@@ -102,6 +106,8 @@ sbatch \
   --gres="gpu:${GPU_STRING}:${NUM_GPUS}" \
   --chdir="$CURR_DIR" \
   $SLURM_ACCOUNT_OPT $SLURM_PARTITION_OPT \
+  $PY_BIN_OPT \
+  $CONDA_MOD_OPT \
   --export=ALL,\
 JOB_OUTPUT_FOLDER="$OUT_DIR",\
 JOB_NUM_SCENES="$NUM_SCENES",\
