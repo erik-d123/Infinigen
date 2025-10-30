@@ -34,10 +34,18 @@ if command -v conda >/dev/null 2>&1; then
   }
 fi
 
-if command -v conda >/dev/null 2>&1 && conda env list | grep -q "${JOB_CONDA_ENV:-infinigen}"; then
-  conda activate "${JOB_CONDA_ENV:-infinigen}" || true
-elif command -v mamba >/dev/null 2>&1 && mamba env list | grep -q "${JOB_CONDA_ENV:-infinigen}"; then
-  mamba activate "${JOB_CONDA_ENV:-infinigen}" || true
+if command -v conda >/dev/null 2>&1; then
+  if [[ -n "${JOB_CONDA_ENV_PATH:-}" && -d "${JOB_CONDA_ENV_PATH:-}" ]]; then
+    conda activate "${JOB_CONDA_ENV_PATH}" || true
+  elif conda env list | grep -q "${JOB_CONDA_ENV:-infinigen}"; then
+    conda activate "${JOB_CONDA_ENV:-infinigen}" || true
+  fi
+elif command -v mamba >/dev/null 2>&1; then
+  if [[ -n "${JOB_CONDA_ENV_PATH:-}" && -d "${JOB_CONDA_ENV_PATH:-}" ]]; then
+    mamba activate "${JOB_CONDA_ENV_PATH}" || true
+  else
+    mamba activate "${JOB_CONDA_ENV:-infinigen}" || true
+  fi
 else
   echo "[lidar_rrt_job] WARNING: could not activate conda env ${JOB_CONDA_ENV:-infinigen}" >&2
 fi
@@ -60,6 +68,9 @@ fi
 PY_BIN="${JOB_PYTHON_BIN:-python}"
 echo "[lidar_rrt_job] Using Python: $(command -v "$PY_BIN" || echo not-found)"
 "$PY_BIN" --version || true
+# Scratch tmp directory
+export TMPDIR="${SLURM_TMPDIR:-/scratch/${USER}/tmp}"
+mkdir -p "$TMPDIR"
 # Ensure exporter deps are visible to Blender if needed
 if [ -d ".blender_site" ]; then
   export PYTHONPATH="$(pwd)/.blender_site:${PYTHONPATH:-}"

@@ -6,7 +6,8 @@
 #     [--scenes N] [--frames 1-200] [--seed 0] \
 #     [--out outputs/video_dynamic_indoor] \
 #     [--time 01-00:00:00] [--account ACC] [--partition PART] \
-#     [--env infinigen] [--conda-module anaconda3] [--python-bin python3.10] [--ocmesh true|false]
+#     [--env infinigen|--env-path /abs/path/to/env] [--conda-module anaconda3] [--python-bin python3.10] [--ocmesh true|false] \
+#     [--repo /scratch/$USER/infinigen_work/Infinigen]
 #
 # gpu_type: one of 1080, 2080, 3090, 6000, a40, a6000
 
@@ -34,6 +35,8 @@ ENABLE_OCMESH=${ENABLE_OCMESH:-"false"}
 NO_BAKE_NORMALS=${NO_BAKE_NORMALS:-"false"}
 PY_BIN_OPT=""
 CONDA_MOD_OPT=""
+CONDA_ENV_PATH=""
+CHDIR="$(pwd)"
 
 # Ensure sbatch is available (must run on cluster login node)
 if ! command -v sbatch >/dev/null 2>&1; then
@@ -53,9 +56,11 @@ while [[ $# -gt 0 ]]; do
     --account) SLURM_ACCOUNT_OPT="--account=$2"; shift 2;;
     --partition) SLURM_PARTITION_OPT="--partition=$2"; shift 2;;
     --env) CONDA_ENV="$2"; shift 2;;
+    --env-path) CONDA_ENV_PATH="$2"; shift 2;;
     --conda-module) CONDA_MOD_OPT="--export=JOB_CONDA_MODULE=$2"; shift 2;;
     --python-bin) PY_BIN_OPT="--export=JOB_PYTHON_BIN=$2"; shift 2;;
     --ocmesh) ENABLE_OCMESH="$2"; shift 2;;
+    --repo) CHDIR="$2"; shift 2;;
     *) echo "Unknown option: $1" >&2; exit 1;;
   esac
 done
@@ -94,8 +99,6 @@ echo "Submitting $JOB_NAME: $NUM_SCENES scenes, frames $FRAME_RANGE, seed $SEED"
 echo "GPU: $NUM_GPUS x $GPU_STRING; CPUs: $TOTAL_CPUS; Mem: $((TOTAL_MEM/1000))GB; Time: $TIME_LIMIT"
 echo "Account: ${SLURM_ACCOUNT_OPT#--account=}  Partition: ${SLURM_PARTITION_OPT#--partition=}  Env: $CONDA_ENV"
 
-CURR_DIR=$(pwd)
-
 sbatch \
   --job-name="$JOB_NAME" \
   --output="scripts/slurm/${JOB_NAME}.out" \
@@ -103,7 +106,7 @@ sbatch \
   --cpus-per-task="$TOTAL_CPUS" \
   --mem="$TOTAL_MEM" \
   --gres="gpu:${GPU_STRING}:${NUM_GPUS}" \
-  --chdir="$CURR_DIR" \
+  --chdir="$CHDIR" \
   $SLURM_ACCOUNT_OPT $SLURM_PARTITION_OPT \
   $PY_BIN_OPT \
   $CONDA_MOD_OPT \
@@ -113,5 +116,6 @@ JOB_NUM_SCENES="$NUM_SCENES",\
 JOB_FRAME_RANGE="$FRAME_RANGE",\
 JOB_SEED="$SEED",\
 JOB_ENABLE_OCMESH="$ENABLE_OCMESH",\
-JOB_CONDA_ENV="$CONDA_ENV" \
+JOB_CONDA_ENV="$CONDA_ENV",\
+JOB_CONDA_ENV_PATH="$CONDA_ENV_PATH" \
   scripts/slurm/lidar_rrt_job.sh
