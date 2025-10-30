@@ -1,6 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Minimal indoor LiDAR viewer with color modes and frame stepping
-
 from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -18,9 +15,6 @@ try:
     from plyfile import PlyData  # richer PLY reader for custom fields
 except Exception:
     PlyData = None
-
-
-# ------------------------------ I/O ------------------------------
 
 def _list_frames(out_dir: Path) -> List[Path]:
     files = sorted(out_dir.glob("lidar_frame_*.ply"))
@@ -136,9 +130,6 @@ def _read_ply_all(path: Path) -> Dict[str, np.ndarray]:
     data["points"] = np.asarray(pcd.points, dtype="f4")
     return data
 
-
-# --------------------------- coloring ---------------------------
-
 def _color_from_intensity_u8(intensity: np.ndarray, N: int) -> np.ndarray:
     if intensity is None or intensity.size != N:
         return np.zeros((N,3), dtype="f4")
@@ -202,9 +193,6 @@ def _intensity_to_heat(intensity: np.ndarray, N: int) -> np.ndarray:
     idx = {v:i for i,v in enumerate(unique.tolist())}
     c = np.asarray([lut[idx[int(v)]] for v in r], dtype="f4")
     return c
-
-
-# --------------------------- viewer ---------------------------
 
 def _make_o3d_pcd(points: np.ndarray, colors: np.ndarray, normals: Optional[np.ndarray] = None):
     assert o3d is not None, "open3d is required for visualization"
@@ -284,8 +272,6 @@ def view_dir(out_dir: str, color: str = "intensity", frame: Optional[int]=None):
     vis.run()
     vis.destroy_window()
 
-
-# ------------------------------ CLI ------------------------------
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser("Infinigen indoor LiDAR viewer")

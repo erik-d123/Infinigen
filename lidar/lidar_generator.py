@@ -1,6 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Orchestration for indoor LiDAR: CLI + per-frame generation
-
 from __future__ import annotations
 import argparse
 import json
@@ -22,9 +19,10 @@ except Exception:
 from lidar.lidar_config import LidarConfig
 from lidar.lidar_raycast import generate_sensor_rays, perform_raycasting
 from lidar.lidar_scene import resolve_camera, sensor_to_camera_rotation
+from infinigen.core.util import camera as util_cam
+import os
+import shutil
 from lidar.lidar_io import save_ply
-
-# ------------------------------- utils -------------------------------
 
 def _parse_frames(frames_arg: str) -> List[int]:
     """Accept '1-48', '1,5,10', or single '12'."""
@@ -60,7 +58,40 @@ def _origins_for(camera_obj, N: int) -> np.ndarray:
 def _ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
-# --------------------------- frame processing ---------------------------
+def _get_cam_ids(camera_obj) -> tuple[int,int]:
+    name = str(getattr(camera_obj, 'name', 'Camera'))
+    try:
+        _, rig, sub = name.split('_')
+        return int(rig), int(sub)
+    except Exception:
+        return (0, 0)
+
+def _save_camera_parameters(camera_obj, output_folder: Path, frame: int):
+    scene = bpy.context.scene
+    if frame is not None:
+        scene.frame_set(frame)
+    # Ensure sensor aspect matches render aspect to avoid ValueError in K computation
+    try:
+        K = util_cam.get_calibration_matrix_K_from_blender(camera_obj.data)
+    except Exception:
+        try:
+            W = scene.render.resolution_x
+            H = scene.render.resolution_y
+            if H > 0:
+                camd = camera_obj.data
+                # Adjust sensor_width to match render aspect while keeping height
+                camd.sensor_width = float(camd.sensor_height) * (float(W) / float(H))
+            K = util_cam.get_calibration_matrix_K_from_blender(camera_obj.data)
+        except Exception:
+            # Fallback to identity intrinsics if still failing
+            K = np.eye(3, dtype=np.float64)
+    HW = np.array((scene.render.resolution_y, scene.render.resolution_x))
+    T = np.asarray(camera_obj.matrix_world, dtype=np.float64) @ np.diag((1.0, -1.0, -1.0, 1.0))
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    rig_id, subcam_id = _get_cam_ids(camera_obj)
+    suffix = f"_{rig_id}_0_{frame}_{subcam_id}"
+    np.savez(output_folder / f"camview{suffix}.npz", K=np.asarray(K, dtype=np.float64), T=T, HW=HW)
 
 @dataclass
 class FrameOutputs:
@@ -150,6 +181,60 @@ def process_frame(scene, camera_obj, cfg: LidarConfig, out_dir: Path, frame: int
         + json.dumps(meta) + "\n"
     )
 
+    # Package camera intrinsics/extrinsics in a camview folder consistent with Infinigen
+    rig_id, subcam_id = _get_cam_ids(camera_obj)
+    camview_dir = out_dir / "camview" / f"camera_{rig_id}"
+    camview_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        _save_camera_parameters(camera_obj, camview_dir, frame=frame)
+    except Exception:
+        pass
+
+    # Package IMU/TUM data: symlink/copy from sibling frames/imu_tum if present
+    try:
+        # seed root assumed to be input scene folder parent; infer from current .blend if available
+        blend_path = Path(bpy.data.filepath) if bpy and bpy.data and bpy.data.filepath else None
+        seed_root = blend_path.parent if blend_path is not None else out_dir.parent
+        src_imu_dir = seed_root / "frames" / "imu_tum"
+        dst_imu_dir = out_dir / "imu_tum"
+        if src_imu_dir.exists():
+            dst_imu_dir.mkdir(parents=True, exist_ok=True)
+            # rig tum file is named like camrig_0_tum.txt
+            rig_tum_name = f"camrig_{rig_id}_tum.txt"
+            src_tum = src_imu_dir / rig_tum_name
+            if src_tum.exists():
+                dst_tum = dst_imu_dir / rig_tum_name
+                if not dst_tum.exists():
+                    try:
+                        os.symlink(src_tum, dst_tum)
+                    except Exception:
+                        shutil.copy2(src_tum, dst_tum)
+                # Convenience copy as poses_tum.txt at root of LiDAR folder
+                poses_path = out_dir / "poses_tum.txt"
+                if not poses_path.exists():
+                    try:
+                        os.symlink(dst_tum, poses_path)
+                    except Exception:
+                        shutil.copy2(dst_tum, poses_path)
+    except Exception:
+        pass
+
+    # Write LiDAR calibration JSON (sensor<->camera mapping and key params)
+    try:
+        R_cs = sensor_to_camera_rotation().tolist()
+        calib = {
+            "frame_mode": getattr(cfg, "ply_frame", "sensor"),
+            "sensor_to_camera_R_cs": R_cs,
+            "min_range": float(getattr(cfg, "min_range", 0.05)),
+            "max_range": float(getattr(cfg, "max_range", 100.0)),
+            "azimuth_steps": int(getattr(cfg, "force_azimuth_steps", 0) or getattr(cfg, "azimuth_steps", 1800)),
+            "rings": int(getattr(cfg, "rings", 16)),
+        }
+        with (out_dir / "lidar_calib.json").open("w") as fh:
+            json.dump(calib, fh, indent=2)
+    except Exception:
+        pass
+
     return FrameOutputs(out_ply, float(res.get("scale_used", 0.0)), int(pts_out.shape[0]))
 
 # ------------------------- top-level entrypoints -------------------------
@@ -159,6 +244,18 @@ def run_on_current_scene(output_dir: str, frames: Sequence[int], camera_name: st
     assert bpy is not None, "Must run inside Blender"
     cfg_kwargs = dict(cfg_kwargs or {})
     cfg = LidarConfig(**cfg_kwargs)
+
+    # Prefer Infinigen export-baked textures by default if not explicitly provided
+    try:
+        if getattr(cfg, "use_export_bakes", True) and not getattr(cfg, "export_bake_dir", None):
+            blend_path = Path(bpy.data.filepath) if bpy and bpy.data and bpy.data.filepath else None
+            if blend_path is not None:
+                seed_root = blend_path.parent  # fine/coarse folder
+                export_dir = seed_root / "export" / "textures"
+                if export_dir.exists():
+                    cfg.export_bake_dir = str(export_dir)
+    except Exception:
+        pass
 
     scene = bpy.context.scene
     cam = resolve_camera(scene, camera_name)
@@ -196,8 +293,6 @@ def generate_for_scene(scene_path: str, output_dir: str, frames: Sequence[int], 
     bpy.ops.wm.open_mainfile(filepath=str(scene_path))
     run_on_current_scene(output_dir=output_dir, frames=frames, camera_name=camera_name, cfg_kwargs=cfg_kwargs)
 
-# -------------------------------- CLI --------------------------------
-
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser("Infinigen indoor LiDAR")
     p.add_argument("scene_path", type=str, help="Path to .blend")
@@ -217,6 +312,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument("--default-opacity", type=float, default=1.0)
     p.add_argument("--ply-binary", action="store_true")
     p.add_argument("--seed", type=int, default=0)
+    # Baking/material sampling controls
+    p.add_argument("--no-bake-pbr", action="store_true")
+    p.add_argument("--bake-resolution", type=int, default=None)
+    p.add_argument("--no-bake-normals", action="store_true")
+    p.add_argument("--export-bake-dir", type=str, default=None)
     return p.parse_args(argv)
 
 def main(argv: Sequence[str] | None = None):
@@ -236,6 +336,10 @@ def main(argv: Sequence[str] | None = None):
         default_opacity=args.default_opacity,
         ply_binary=bool(args.ply_binary),
         prefer_ior=True,
+        # Material sampling: prefer exporter bakes; never bake here
+        use_export_bakes=not bool(args.no_bake_pbr),
+        export_bake_dir=args.export_bake_dir,
+        use_baked_normals=not bool(args.no_bake_normals) if hasattr(args, 'no_bake_normals') else True,
     )
 
     frames = _parse_frames(args.frames)

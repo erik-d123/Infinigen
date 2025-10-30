@@ -15,8 +15,6 @@ except Exception:
     bpy = None
 
 
-# --------------------------- transforms ---------------------------
-
 def world_to_frame_matrix(camera_obj, frame: str = "sensor") -> np.ndarray:
     """
     Return 4x4 transform 'world -> frame' for {world|camera|sensor}.
@@ -53,9 +51,6 @@ def world_to_frame_matrix(camera_obj, frame: str = "sensor") -> np.ndarray:
     Tsw[:3, :3] = R_sc @ Tcw[:3, :3]
     Tsw[:3, 3] = (R_sc @ Tcw[:3, 3])
     return Tsw
-
-
-# ----------------------------- PLY I/O -----------------------------
 
 # Fixed base order; append optional fields if present.
 _BASE_LAYOUT = [

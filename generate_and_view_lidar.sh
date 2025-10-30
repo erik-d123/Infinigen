@@ -9,12 +9,12 @@ FRAMES="29-30"
 CAMERA="Camera"
 
 # Sensor preset (resolution determined by preset policy)
-PRESET="OS1-128"   # VLP-16 | HDL-32E | HDL-64E | OS1-128
+PRESET="VLP-16"   # VLP-16 | HDL-32E | HDL-64E | OS1-128
 
 # Output frame for PLY (sensor recommended for LiDAR POV)
 PLY_FRAME="sensor"     # sensor | camera | world
 
-# Let user optionally supply: SCENE_PATH OUTPUT_DIR FRAMES CAMERA PRESET
+# Let user optionally supply: SCENE_PATH OUTPUT_DIR FRAMES CAMERA PRESET [FORCE_AZIMUTH_STEPS] [--no-bake-normals]
 OUTPUT_DIR=""  # computed later unless provided
 if [ $# -ge 1 ]; then SCENE_PATH="$1"; fi
 if [ $# -ge 2 ]; then OUTPUT_DIR="$2"; fi
@@ -24,6 +24,10 @@ if [ $# -ge 5 ]; then PRESET="$5"; fi
 # Advanced option: FORCE_AZIMUTH (not typically needed)
 FORCE_AZIMUTH_STEPS=""
 if [ $# -ge 6 ]; then FORCE_AZIMUTH_STEPS="$6"; fi
+
+# Optional: disable normal baking to speed up (pass exactly "--no-bake-normals")
+NO_BAKE_NORMALS=""
+if [ $# -ge 7 ]; then NO_BAKE_NORMALS="$7"; fi
 
 # Build default OUTPUT_DIR (after any overrides) if not provided
 if [ -z "${OUTPUT_DIR}" ]; then
@@ -45,7 +49,7 @@ echo "Output:  $OUTPUT_DIR"
 echo "========================================"
 
 echo "Generating LiDAR data..."
-python -m infinigen.launch_blender --background --python lidar/lidar_generator.py -- \
+python -m infinigen.launch_blender -m lidar.lidar_generator -- \
   "$SCENE_PATH" \
   --output_dir "$OUTPUT_DIR" \
   --frames "$FRAMES" \
@@ -53,6 +57,7 @@ python -m infinigen.launch_blender --background --python lidar/lidar_generator.p
   --preset "$PRESET" \
   $([ -n "$FORCE_AZIMUTH_STEPS" ] && echo "--force-azimuth-steps $FORCE_AZIMUTH_STEPS") \
   --ply-frame "$PLY_FRAME" \
+  $NO_BAKE_NORMALS \
   --seed 0
 
 echo "Data generation complete!"
@@ -63,4 +68,3 @@ echo "  python lidar/lidar_viewer.py \"$OUTPUT_DIR\" --color intensity_heat     
 echo "  python lidar/lidar_viewer.py \"$OUTPUT_DIR\" --color ring                 # Ring (elevation) coloring"
 echo "  python lidar/lidar_viewer.py \"$OUTPUT_DIR\" --camera-view                # LiDAR POV (uses poses_tum.txt when present)"
 echo "========================================"
-

@@ -83,7 +83,6 @@ class RaycastResult:
     mat_class: Optional[np.ndarray] = None
     reflectivity: Optional[np.ndarray] = None
     transmittance: Optional[np.ndarray] = None
-    return_power: Optional[np.ndarray] = None
 
 
 def perform_raycasting(
@@ -137,17 +136,29 @@ def perform_raycasting(
         if r < min_r or r > max_r:
             continue
 
-        cos_i = _compute_cos_i(nrm, d)
+        # Material extraction
+        props = extract_material_properties(obj, int(face_index), depsgraph, loc, cfg)
+        # Prefer shading normal if provided by sampler, else geometric; flip if backfacing
+        sh_nrm = np.array(props.get("shading_normal_world", nrm), dtype=np.float64)
+        if np.dot(sh_nrm, d) > 0:
+            sh_nrm = -sh_nrm
+        cos_i = _compute_cos_i(sh_nrm, d)
         if cos_i < grazing_drop:
             continue
 
-        # Material extraction and radiometry (pre-alpha reflectivity)
-        props = extract_material_properties(obj, int(face_index), depsgraph, loc)
+        # Radiometry (pre-alpha reflectivity)
         I0, sec_scale, refl0, T_mat, alpha_cov = compute_intensity(props, cos_i, r, cfg)
 
+        # Alpha handling: drop hits when effective alpha is below clip threshold
+        alpha_mode = str(props.get("alpha_mode", "BLEND")).upper()
+        alpha_clip = float(props.get("alpha_clip", 0.5))
+        if alpha_cov < alpha_clip:
+            continue
+        alpha_apply = 1.0 if alpha_mode == "CLIP" else alpha_cov
+
         # Apply alpha once
-        refl = float(refl0 * alpha_cov)
-        I = float(I0 * alpha_cov)
+        refl = float(refl0 * alpha_apply)
+        I = float(I0 * alpha_apply)
 
         # Primary record
         pts.append(loc.astype(np.float32))
@@ -166,7 +177,7 @@ def perform_raycasting(
         # Secondary path
         sec_added = False
         if enable_secondary:
-            residual = float(sec_scale * alpha_cov)  # spawn energy from primary surface
+            residual = float(sec_scale * alpha_apply)  # spawn energy from primary surface
             if residual > sec_min_res and cos_i >= sec_min_cos and (max_r - r) > sec_bias:
                 # Offset origin away from surface to avoid self-hit
                 off_dir = nrm if np.isfinite(nrm).all() else d
@@ -241,7 +252,6 @@ def perform_raycasting(
             "mat_class": np.zeros((0,), np.uint8),
             "reflectivity": np.zeros((0,), np.float32),
             "transmittance": np.zeros((0,), np.float32),
-            "return_power": np.zeros((0,), np.float32),
         }
 
     pts = np.stack(pts, axis=0)
@@ -270,7 +280,6 @@ def perform_raycasting(
         scale = global_scale
     inten_u8 = np.clip(np.round(inten_raw * scale * 255.0), 0, 255).astype(np.uint8)
 
-    # Return power equals reflectivity (pre-U8), for analysis
     return {
         "points": pts,
         "intensity": inten_u8,
@@ -284,6 +293,5 @@ def perform_raycasting(
         "mat_class": mat_cls,
         "reflectivity": refl_f,
         "transmittance": trans_arr,
-        "return_power": refl_f.copy(),
         "scale_used": np.float32(scale),
     }

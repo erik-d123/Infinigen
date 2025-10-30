@@ -24,6 +24,9 @@ import bpy
 
 pwd = os.getcwd()
 sys.path.append(str(Path(__file__).parent.parent.parent))
+vendor_dir = os.path.join(pwd, ".blender_site")
+if os.path.isdir(vendor_dir) and vendor_dir not in sys.path:
+    sys.path.insert(0, vendor_dir)
 
 import gin
 

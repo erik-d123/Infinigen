@@ -643,3 +643,131 @@ def queue_opengl(
         **submit_kwargs,
     )
     return res, output_folder
+
+
+@gin.configurable
+def queue_export_bake_textures(
+    submit_cmd,
+    folder,
+    name,
+    seed,
+    configs,
+    taskname=None,
+    overrides=[],
+    input_indices=None,
+    output_indices=None,
+    image_res: int = 1024,
+    **submit_kwargs,
+):
+    """
+    Pre-bake PBR textures using Infinigen's exporter (no LiDAR baking).
+    Writes textures under {folder}/export/textures.
+    """
+    # Determine an input scene folder (prefer fine/coarse)
+    input_folder_priority_options = ["fine", "coarse"]
+    for opt in input_folder_priority_options:
+        candidate = Path(folder) / opt
+        if (candidate / "scene.blend").exists():
+            input_folder = candidate
+            break
+    else:
+        logger.warning(f"No scene.blend found under {folder}/fine or {folder}/coarse for export bake")
+        return states.JOB_OBJ_SUCCEEDED, None
+
+    export_out = Path(folder) / "export"
+    export_out.mkdir(exist_ok=True, parents=True)
+
+    # Prefer running exporter inside Blender so .blender_site vendor deps are visible
+    repo_root = infinigen.repo_root()
+    pyexpr = (
+        "import os, sys; "
+        f"vendor=os.path.join({repr(str(repo_root))}, '.blender_site'); "
+        "(sys.path.insert(0, vendor) if os.path.isdir(vendor) and vendor not in sys.path else None); "
+        f"sys.argv=['Blender','--input_folder',{repr(str(input_folder))},'--output_folder',{repr(str(export_out))},'-f','usdc','-r','{int(image_res)}']; "
+        "import infinigen.tools.export as ex; ex.main(ex.make_args())"
+    )
+    cmd = [
+        sys.executable,
+        "-m",
+        "infinigen.launch_blender",
+        "--background",
+        "--python-expr",
+        pyexpr,
+    ]
+
+    with (folder / "run_pipeline.sh").open("a") as f:
+        f.write(f"{' '.join(cmd)}\n\n")
+
+    res = submit_cmd(cmd, folder=folder, name=name, **submit_kwargs)
+    return res, export_out
+
+
+@gin.configurable
+def queue_lidar(
+    submit_cmd,
+    folder,
+    name,
+    seed,
+    configs,
+    taskname=None,
+    overrides=[],
+    exclude_gpus=[],
+    input_indices=None,
+    output_indices=None,
+    **submit_kwargs,
+):
+    """
+    Launch LiDAR point cloud generation as a camera-dependent task.
+    Reuses Infinigen export PBR bakes (no baking performed here).
+    """
+    from infinigen.tools.suffixes import get_suffix
+
+    input_suffix = get_suffix(input_indices)
+    output_suffix = get_suffix(output_indices) if output_indices is not None else ""
+
+    # Resolve input folder (prefer fine/coarse)
+    input_folder_priority_options = [
+        f"fine{input_suffix}",
+        "fine",
+        f"coarse{input_suffix}",
+        "coarse",
+    ]
+    for opt in input_folder_priority_options:
+        candidate = Path(folder) / opt
+        if (candidate / "scene.blend").exists():
+            input_folder = candidate
+            break
+    else:
+        logger.warning(f"No scene.blend found under {folder} for any of {input_folder_priority_options}")
+        return states.JOB_OBJ_SUCCEEDED, None
+
+    # Camera + frame block
+    cam_rig = output_indices.get("cam_rig", 0) if output_indices else 0
+    subcam = output_indices.get("subcam", 0) if output_indices else 0
+    cam_name = f"camera_{cam_rig}_{subcam}"
+    start_frame = output_indices.get("frame", 1) if output_indices else 1
+    last_cam_frame = output_indices.get("last_cam_frame", start_frame) if output_indices else start_frame
+
+    # Output directory for LiDAR
+    out_dir = Path(folder) / f"frames_lidar{output_suffix}"
+    out_dir.mkdir(exist_ok=True, parents=True)
+
+    # Export bake textures folder (produced by exporter global task)
+    export_bake_dir = Path(folder) / "export" / "textures"
+
+    # Build command line (no gin overrides here; this script has its own CLI)
+    cmd = [
+        sys.executable, "-m", "infinigen.launch_blender",
+        "-m", "lidar.lidar_generator", "--",
+        str(input_folder / "scene.blend"),
+        "--output_dir", str(out_dir),
+        "--frames", f"{start_frame}-{last_cam_frame}",
+        "--camera", cam_name,
+        "--export-bake-dir", str(export_bake_dir),
+    ]
+
+    with (folder / "run_pipeline.sh").open("a") as f:
+        f.write(f"{' '.join(cmd)}\n\n")
+
+    res = submit_cmd(cmd, folder=folder, name=name, **submit_kwargs)
+    return res, out_dir

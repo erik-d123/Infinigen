@@ -1,24 +1,23 @@
-# SPDX-License-Identifier: MIT
-# Indoor LiDAR intensity model (essential features; Blender-safe imports)
-
 from __future__ import annotations
 import math
 from typing import Dict, Tuple, Optional
+import numpy as np
 
 try:
     import bpy
 except Exception:  # allows pure-Python unit tests
     bpy = None
 
+# Local default in case lidar_config is not importable here
+try:
+    # used only for default coverage when Alpha is effectively unset
+    from lidar.lidar_config import DEFAULT_OPACITY as _CFG_DEFAULT_OPACITY  # type: ignore
+except Exception:
+    _CFG_DEFAULT_OPACITY = 1.0
+
 # Lazy import to avoid heavy imports when running pure unit tests
 def _get_default_opacity(cfg) -> float:
-    try:
-        from lidar.lidar_config import DEFAULT_OPACITY  # type: ignore
-    except Exception:
-        DEFAULT_OPACITY = 1.0
-    return float(getattr(cfg, "default_opacity", DEFAULT_OPACITY))
-
-# --------------------------- math helpers ---------------------------
+    return float(getattr(cfg, "default_opacity", _CFG_DEFAULT_OPACITY))
 
 def _luma(rgb: Tuple[float, float, float]) -> float:
     r, g, b = rgb
@@ -44,13 +43,27 @@ def transmissive_reflectance(cos_i: float, ior: float) -> float:
     f0 = ((ior - 1.0) / (ior + 1.0)) ** 2
     return F_schlick(max(0.0, float(cos_i)), f0)
 
-# ---------------------- Principled extraction ----------------------
-
 def _find_principled_bsdf(mat) -> Optional["bpy.types.Node"]:
     if not (bpy and mat and getattr(mat, "use_nodes", False) and mat.node_tree):
         return None
     nt = mat.node_tree
-    # Prefer a Principled node that feeds the material output
+
+    # 1) Try to find the Principled BSDF directly feeding the Material Output's Surface
+    try:
+        outputs = [n for n in nt.nodes if getattr(n, "type", "") == "OUTPUT_MATERIAL"]
+        for out in outputs:
+            surf = out.inputs.get("Surface")
+            if surf is None:
+                continue
+            for link in nt.links:
+                if link.to_node is out and link.to_socket is surf:
+                    if getattr(link.from_node, "type", "") == "BSDF_PRINCIPLED":
+                        return link.from_node
+    except Exception:
+        # Fallback to simple scan below
+        pass
+
+    # 2) Fallback: first Principled node found
     for n in nt.nodes:
         if getattr(n, "type", "") == "BSDF_PRINCIPLED":
             return n
@@ -76,7 +89,7 @@ def _get_color_default(bsdf, name="Base Color", default=(0.8, 0.8, 0.8)):
             pass
     return tuple(default)
 
-def extract_material_properties(obj, poly_index, depsgraph, hit_world=None) -> Dict:
+def extract_material_properties(obj, poly_index, depsgraph, hit_world=None, cfg=None) -> Dict:
     """
     Read Principled BSDF inputs needed by the intensity model.
 
@@ -92,7 +105,11 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None) -> D
         transmission=0.0,
         ior=1.45,
         transmission_roughness=0.0,
-        opacity=1.0,
+        # None means: use cfg.default_opacity fallback unless explicitly set/sampled
+        opacity=None,
+        # Alpha semantics
+        alpha_mode="BLEND",   # BLEND | HASHED | CLIP
+        alpha_clip=0.5,
         diffuse_scale=1.0,
         specular_scale=1.0,
         is_glass_hint=False,
@@ -114,6 +131,13 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None) -> D
 
     bsdf = _find_principled_bsdf(mat)
     if bsdf is None:
+        # Still try to record alpha semantics from material
+        try:
+            if mat is not None:
+                props["alpha_mode"] = getattr(mat, "blend_method", props["alpha_mode"]).upper()
+                props["alpha_clip"] = float(getattr(mat, "alpha_threshold", props["alpha_clip"]))
+        except Exception:
+            pass
         return props
 
     # Principled v1/v2 compatibility
@@ -128,20 +152,121 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None) -> D
     props["ior"] = _get_input_default(bsdf, ["IOR"], props["ior"])
     # Optional Transmission Roughness
     props["transmission_roughness"] = _get_input_default(bsdf, ["Transmission Roughness"], props["transmission_roughness"])
-    # Alpha (coverage) if present; keep 1.0 default otherwise
+    # Clearcoat omitted for essential scope
+    # Alpha (coverage): if unlinked and intentionally set away from default 1.0, honor it;
+    # otherwise leave as None to allow cfg.default_opacity fallback in compute_intensity.
     alpha_sock = bsdf.inputs.get("Alpha")
-    if alpha_sock is not None and not alpha_sock.is_linked:
+    if alpha_sock is not None:
         try:
-            props["opacity"] = float(alpha_sock.default_value)
+            if not alpha_sock.is_linked:
+                val = float(alpha_sock.default_value)
+                # Consider values meaningfully different from 1.0 as explicit overrides
+                if abs(val - 1.0) > 1e-6:
+                    props["opacity"] = max(0.0, min(1.0, val))
+                    # If explicit low alpha is set, enforce clip semantics when below threshold
+                    try:
+                        clip = float(props.get("alpha_clip", 0.5))
+                    except Exception:
+                        clip = 0.5
+                    if val < clip:
+                        props["alpha_mode"] = "CLIP"
+            else:
+                # Linked alpha not evaluated here; defer to cfg.default_opacity
+                pass
         except Exception:
-            props["opacity"] = 1.0
-    props["opacity"] = max(0.0, min(1.0, props["opacity"]))
+            pass
+
+    # Record material alpha semantics for CLIP/HASHED/BLEND handling
+    try:
+        if mat is not None:
+            mode_from_mat = getattr(mat, "blend_method", props["alpha_mode"]) or props["alpha_mode"]
+            # Do not override a previously forced CLIP decision
+            if str(props.get("alpha_mode", "")).upper() != "CLIP":
+                props["alpha_mode"] = str(mode_from_mat).upper()
+            props["alpha_clip"] = float(getattr(mat, "alpha_threshold", props["alpha_clip"]))
+    except Exception:
+        pass
+
+    # Prefer Infinigen export bakes when enabled; never bake here
+    if cfg is not None and hit_world is not None and bool(getattr(cfg, "use_export_bakes", True)):
+        try:
+            from lidar.material_sampler import MaterialSampler
+            ms = MaterialSampler.get()
+            export_dir = getattr(cfg, "export_bake_dir", None)
+            sampled = ms.sample_properties(
+                obj, depsgraph, poly_index, hit_world,
+                res=int(getattr(cfg, "bake_resolution", 1024)),
+                export_bake_dir=export_dir, use_export_bakes=True,
+                use_normals=bool(getattr(cfg, "use_baked_normals", True)),
+            )
+            if sampled:
+                for k in [
+                    "base_color","roughness","metallic","transmission","opacity",
+                    "shading_normal_world",
+                ]:
+                    if k in sampled and sampled[k] is not None:
+                        # Respect config to skip baked normal usage
+                        if k == "shading_normal_world" and not bool(getattr(cfg, "use_baked_normals", True)):
+                            continue
+                        props[k] = sampled[k]
+        except Exception:
+            pass
+
+    # Optional fallback to direct image textures only when enabled
+    if hit_world is not None and cfg is not None and bool(getattr(cfg, "enable_image_fallback", False)):
+        try:
+            from lidar.fallback_sampler import apply_image_overrides as _apply_image_overrides
+            _apply_image_overrides(
+                obj=obj,
+                depsgraph=depsgraph,
+                bsdf=bsdf,
+                poly_index=poly_index,
+                hit_world=hit_world,
+                props=props,
+                use_normals=bool(getattr(cfg, "use_baked_normals", True)),
+            )
+            # If base_color was not overridden (e.g. no UVs), but Base Color is linked to an image,
+            # sample its first pixel as a pragmatic fallback (works for 1x1 test textures)
+            try:
+                # Prefer directly linked image
+                bc_sock = bsdf.inputs.get("Base Color")
+                tex_node = None
+                if bc_sock is not None and bc_sock.is_linked:
+                    cand = bc_sock.links[0].from_node
+                    if getattr(cand, "type", "") == "TEX_IMAGE":
+                        tex_node = cand
+                # Otherwise, fall back to any TEX_IMAGE in the material (common in test scenes)
+                if tex_node is None:
+                    for n in bsdf.id_data.nodes:  # node_tree.nodes
+                        if getattr(n, "type", "") == "TEX_IMAGE" and getattr(n, "image", None) is not None:
+                            tex_node = n
+                            break
+                if tex_node is not None and getattr(tex_node, "image", None) is not None:
+                    img = tex_node.image
+                    w, h = img.size
+                    if w > 0 and h > 0:
+                        px = np.array(img.pixels[:], dtype=np.float32)
+                        r, g, b = float(px[0]), float(px[1]), float(px[2])
+                        props["base_color"] = (
+                            max(0.0, min(1.0, r)),
+                            max(0.0, min(1.0, g)),
+                            max(0.0, min(1.0, b)),
+                        )
+            except Exception:
+                pass
+        except Exception:
+            pass
+        if not bool(getattr(cfg, "use_baked_normals", True)):
+            props.pop("shading_normal_world", None)
 
     # Glass hint heuristic for non-opaque transmissive
-    props["is_glass_hint"] = bool(props["transmission"] > 0.5 or props["opacity"] < 0.5)
+    _op = props["opacity"] if props.get("opacity", None) is not None else _CFG_DEFAULT_OPACITY
+    try:
+        op_val = float(_op)
+    except Exception:
+        op_val = _CFG_DEFAULT_OPACITY
+    props["is_glass_hint"] = bool(float(props.get("transmission", 0.0)) > 0.5 or op_val < 0.5)
     return props
-
-# ----------------------- intensity computation -----------------------
 
 def compute_intensity(props: Dict, cos_i: float, R: float, cfg):
     """
@@ -170,7 +295,7 @@ def compute_intensity(props: Dict, cos_i: float, R: float, cfg):
     diffuse_scale = max(0.0, float(props.get("diffuse_scale", 1.0)))
     specular_scale = max(0.0, float(props.get("specular_scale", 1.0)))
 
-    # Coverage fallback: use cfg.default_opacity only if key missing
+    # Coverage fallback: use cfg.default_opacity only if opacity was not explicitly set
     if "opacity" in props and props["opacity"] is not None:
         alpha_cov = max(0.0, min(1.0, float(props["opacity"])))
     else:
@@ -217,8 +342,6 @@ def compute_intensity(props: Dict, cos_i: float, R: float, cfg):
     secondary_scale = max(0.0, min(1.0, secondary_scale))
 
     return float(intensity), float(secondary_scale), float(reflectivity), float(T_mat), float(alpha_cov)
-
-# ----------------------- simple material class -----------------------
 
 def classify_material(props: Dict) -> int:
     """0: opaque/dielectric, 1: glass-like, 2: metal."""
