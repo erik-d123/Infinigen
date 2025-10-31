@@ -51,11 +51,11 @@ echo "[install_blender_vendor] Ensuring pip in Blender's Python..."
 
 # 3) Install curated package set compatible with Infinigen/Exporter and Indoors
 echo "[install_blender_vendor] Installing packages into vendor: $VENDOR_DIR"
-"$BL_PY" -m pip install --upgrade --target "$VENDOR_DIR" \
+"$BL_PY" -m pip install --upgrade --only-binary=:all: --target "$VENDOR_DIR" \
   'numpy==1.26.4' \
-  'scipy==1.11.4' \
-  'scikit-learn==1.4.2' \
-  'scikit-image==0.21.0' \
+  'scipy==1.10.1' \
+  'scikit-learn==1.3.0' \
+  'scikit-image==0.19.3' \
   'lazy_loader>=0.3' \
   'tifffile>=2022.8.12' \
   'PyWavelets>=1.4.1' \
