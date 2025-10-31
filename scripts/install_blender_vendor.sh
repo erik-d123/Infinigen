@@ -19,11 +19,13 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR_DIR="$REPO_ROOT/.blender_site"
 EXTRA_PKGS=""
+CONDA_ENV_PATH=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --vendor-dir) VENDOR_DIR="$2"; shift 2;;
     --packages) EXTRA_PKGS="$2"; shift 2;;
+    --conda-env-path) CONDA_ENV_PATH="$2"; shift 2;;
     -h|--help)
       sed -n '1,80p' "$0"; exit 0;;
     *) echo "[install_blender_vendor] Unknown option: $1" >&2; exit 1;;
@@ -70,6 +72,25 @@ echo "[install_blender_vendor] Installing packages into vendor: $VENDOR_DIR"
   tqdm \
   'gin_config>=0.5.0' \
   joblib threadpoolctl ${EXTRA_PKGS}
+
+# 3b) Best-effort install of python-fcl into vendor (requires libfcl, octomap, eigen, libccd)
+if [[ -n "$CONDA_ENV_PATH" && -d "$CONDA_ENV_PATH" ]]; then
+  echo "[install_blender_vendor] Attempting to build python-fcl against $CONDA_ENV_PATH"
+  export C_INCLUDE_PATH="$CONDA_ENV_PATH/include:${C_INCLUDE_PATH:-}"
+  export CPLUS_INCLUDE_PATH="$CONDA_ENV_PATH/include:${CPLUS_INCLUDE_PATH:-}"
+  export LIBRARY_PATH="$CONDA_ENV_PATH/lib:${LIBRARY_PATH:-}"
+  export LD_LIBRARY_PATH="$CONDA_ENV_PATH/lib:${LD_LIBRARY_PATH:-}"
+fi
+if ! "$BL_PY" - <<'PY' >/dev/null 2>&1; then
+import importlib, sys
+sys.exit(0 if importlib.util.find_spec('fcl') is not None else 1)
+PY
+then
+  "$BL_PY" -m pip install --no-binary=python-fcl --target "$VENDOR_DIR" python-fcl || \
+    echo "[install_blender_vendor] WARNING: python-fcl build failed; skipping (install libfcl/octomap/eigen/libccd then re-run with --conda-env-path)."
+else
+  echo "[install_blender_vendor] python-fcl already present in vendor"
+fi
 
 # 4) Verify imports inside Blender with .blender_site injected
 echo "[install_blender_vendor] Verifying imports inside Blender..."
