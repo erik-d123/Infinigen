@@ -55,7 +55,7 @@ echo "[install_blender_vendor] Installing packages into vendor: $VENDOR_DIR"
   'numpy==1.26.4' \
   'scipy==1.10.1' \
   'scikit-learn==1.3.0' \
-  'scikit-image==0.19.3' \
+  'scikit-image==0.22.0' \
   'lazy_loader>=0.3' \
   'tifffile>=2022.8.12' \
   'PyWavelets>=1.4.1' \
