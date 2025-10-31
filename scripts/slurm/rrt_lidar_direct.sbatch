@@ -47,7 +47,9 @@ PYEOF
 echo "[job] OUT_ROOT=$OUT_ROOT  TMPDIR=$TMPDIR"
 
 # 1) Generate Indoors coarse scene with RRT (single seed)
-"$PY" -m infinigen.launch_blender -m infinigen_examples.generate_indoors -- \
+# Run the Indoors driver as a module to keep package-relative imports valid
+"$PY" -m infinigen.launch_blender -m infinigen.tools.blendscript_path_append -- \
+  --python-expr "import runpy; runpy.run_module('infinigen_examples.generate_indoors', run_name='__main__')" -- \
   --seed 0 --task coarse \
   --output_folder "$OUT_ROOT/coarse" \
   -g singleroom.gin \
