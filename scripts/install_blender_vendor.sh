@@ -56,6 +56,10 @@ echo "[install_blender_vendor] Installing packages into vendor: $VENDOR_DIR"
   'scipy==1.11.4' \
   'scikit-learn==1.4.2' \
   'scikit-image==0.21.0' \
+  'lazy_loader>=0.3' \
+  'tifffile>=2022.8.12' \
+  'PyWavelets>=1.4.1' \
+  'packaging>=21' \
   psutil pillow matplotlib \
   'imageio<2.32.0' \
   opencv-python-headless \
