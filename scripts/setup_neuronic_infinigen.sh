@@ -92,7 +92,11 @@ else
 fi
 
 log "Activating env: $ENV_PATH"
-conda activate "$ENV_PATH"
+# Some conda activate scripts reference unset vars (e.g., gcc_linux-64 uses CONDA_BUILD_CROSS_COMPILATION);
+# temporarily relax -u to avoid failing on unbound variables during activation
+set +u
+conda activate "$ENV_PATH" || die "Conda activate failed for $ENV_PATH"
+set -u
 
 log "Installing orchestration deps into conda env"
 python -m pip install --upgrade pip
