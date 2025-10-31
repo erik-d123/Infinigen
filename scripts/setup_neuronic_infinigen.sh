@@ -116,15 +116,37 @@ if [[ ! -x "$BL_BIN_PERSIST" ]]; then
     rm -f blender.tar.xz
   fi
   ln -sfn "$BL_ROOT/blender" "$BL_BIN_PERSIST"
+  BL_ROOT_ACTUAL="$BL_ROOT"
 else
   log "Blender already present: $BL_BIN_PERSIST"
+  # Resolve actual install root of the linked blender binary
+  BL_BIN_RESOLVED="$(readlink -f "$BL_BIN_PERSIST" 2>/dev/null || echo "$BL_BIN_PERSIST")"
+  BL_ROOT_ACTUAL="$(dirname "$BL_BIN_RESOLVED")"
+  # If the current install is not the requested version, fetch and relink
+  if [[ "$(basename "$BL_ROOT_ACTUAL")" != "blender-${BLV}-linux-x64" ]]; then
+    log "Existing Blender is $(basename "$BL_ROOT_ACTUAL"); installing requested $BLV and relinking"
+    cd "$PERSIST/blender"
+    if [[ ! -d "$BL_ROOT" ]]; then
+      wget -O blender.tar.xz "https://download.blender.org/release/Blender4.2/blender-${BLV}-linux-x64.tar.xz"
+      mkdir -p "$BL_ROOT"
+      tar -C "$BL_ROOT" --strip-components=1 -xf blender.tar.xz
+      rm -f blender.tar.xz
+    fi
+    ln -sfn "$BL_ROOT/blender" "$BL_BIN_PERSIST"
+    BL_ROOT_ACTUAL="$BL_ROOT"
+  fi
 fi
 
 #
 # 3) Blender vendor site-packages (persistent)
 #
-BL_PYBIN="$BL_ROOT/4.2/python/bin/python3.11"
-[[ -x "$BL_PYBIN" ]] || die "Blender Python not found at $BL_PYBIN"
+# Compute Blender's embedded python from the actual install root
+BL_PYBIN="$BL_ROOT_ACTUAL/4.2/python/bin/python3.11"
+# Fallback: try to discover python bin if layout differs
+if [[ ! -x "$BL_PYBIN" ]]; then
+  BL_PYBIN="$(find "$BL_ROOT_ACTUAL" -path '*/python/bin/python3.*' -type f 2>/dev/null | head -n1 || true)"
+fi
+[[ -x "$BL_PYBIN" ]] || die "Blender Python not found under $BL_ROOT_ACTUAL"
 
 log "Installing Blender-side Python deps into $VENDOR_DIR"
 mkdir -p "$VENDOR_DIR"
