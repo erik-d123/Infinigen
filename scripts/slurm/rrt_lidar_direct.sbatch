@@ -22,6 +22,12 @@ ENV_PATH="/u/ed1783/infinigen_persist/conda/envs/infinigen"
 PY="$ENV_PATH/bin/python"
 BLENDER_BIN="blender/blender"
 
+# Make conda site-packages visible to Blender (easiest way to reuse your env)
+BLENDER_CONDA_SITE="$ENV_PATH/lib/python3.11/site-packages"
+export PYTHONPATH="$BLENDER_CONDA_SITE:${PYTHONPATH:-}"
+export LD_LIBRARY_PATH="$ENV_PATH/lib:${LD_LIBRARY_PATH:-}"
+echo "[job] BLENDER_CONDA_SITE=$BLENDER_CONDA_SITE"
+
 OUT_ROOT="/scratch/ed1783/infinigen_runs/${SLURM_JOB_ID}"
 TMPDIR_DEFAULT="/scratch/${USER}/tmp"
 export TMPDIR="${SLURM_TMPDIR:-$TMPDIR_DEFAULT}"

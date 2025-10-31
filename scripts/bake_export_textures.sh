@@ -36,7 +36,12 @@ echo "  res   : $RES"
 # Invoke exporter module via infinigen launcher (-m) so .blender_site is prepended to sys.path
 # Run exporter via a Python expression so we fully control sys.argv and ensure .blender_site is importable
 REPO_ROOT="$(pwd)"
-python -m infinigen.launch_blender --background --python-expr "import os, sys; vendor=os.path.join('$REPO_ROOT','.blender_site'); \
+# If ENV_PATH is set by the caller, expose its site-packages to Blender as well
+BLENDER_CONDA_SITE="${BLENDER_CONDA_SITE:-${ENV_PATH:-}/lib/python3.11/site-packages}"
+python -m infinigen.launch_blender --background --python-expr "import os, sys; \
+    sp=os.environ.get('BLENDER_CONDA_SITE'); \
+    (sys.path.insert(0, sp) if sp and os.path.isdir(sp) and sp not in sys.path else None); \
+    vendor=os.path.join('$REPO_ROOT','.blender_site'); \
     (sys.path.insert(0, vendor) if os.path.isdir(vendor) and vendor not in sys.path else None); \
     sys.argv=['Blender','--input_folder','$IN_DIR','--output_folder','$OUT_DIR','-f','usdc','-r','$RES']; \
     import infinigen.tools.export as ex; ex.main(ex.make_args())"
