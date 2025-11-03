@@ -1,5 +1,3 @@
-This README-style prompt (include it with your project archive) outlines the current Infinigen + LiDAR setup, key files for review, and the pipeline from Indoors scene generation through exporter PBR texture baking and LiDAR point cloud generation.
-
 ## Repository Context
 
 - **Repo**: `Infinigen` fork (`git@github.com:erik-d123/Infinigen.git`)

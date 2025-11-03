@@ -12,6 +12,7 @@ except Exception:  # pragma: no cover
 
 from lidar.lidar_config import LidarConfig
 from lidar.lidar_raycast import perform_raycasting
+from tests.lidar._bake_utils import bake_current_scene
 
 
 def _reset_scene():
@@ -56,6 +57,9 @@ def test_intensity_vs_tilt_and_shapes(tmp_path):
 
     cfg = LidarConfig()
     cfg.auto_expose = False
+    # Bake exporter textures once (baked-only lane)
+    tex_dir = bake_current_scene(tmp_path, res=64)
+    cfg.export_bake_dir = str(tex_dir)
 
     res_flat = perform_raycasting(scene, deps, origins, directions, rings, az, cfg)
     assert res_flat["points"].shape[1] == 3
@@ -94,6 +98,8 @@ def test_secondary_return_with_transmission(tmp_path):
     cfg = LidarConfig()
     cfg.enable_secondary = True
     cfg.auto_expose = False
+    tex_dir = bake_current_scene(tmp_path, res=64)
+    cfg.export_bake_dir = str(tex_dir)
 
     res = perform_raycasting(scene, deps, origins, directions, rings, az, cfg)
     # Expect either a merged stronger hit or two returns; check num_returns contains 2 or reflectivity non-zero

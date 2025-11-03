@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover
 
 from lidar.lidar_config import LidarConfig
 from lidar.lidar_generator import process_frame
+from tests.lidar._bake_utils import bake_current_scene
 
 
 def _reset_scene():
@@ -52,6 +53,9 @@ def test_process_frame_writes_outputs(tmp_path: Path):
     out_dir = tmp_path / "lidar"
     cfg = LidarConfig(preset="VLP-16")
     cfg.auto_expose = False
+    # Bake textures for current scene and point LiDAR to them
+    tex_dir = bake_current_scene(tmp_path, res=64)
+    cfg.export_bake_dir = str(tex_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     fo = process_frame(scene, cam, cfg, out_dir, frame=1)
     # PLY exists

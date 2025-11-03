@@ -13,7 +13,6 @@ try:
 except Exception:
     bpy = None
 
-from lidar.mesh_uv import compute_barycentric as _barycentric  # reuse
 from lidar.mesh_uv import hit_uv as _hit_uv  # reuse
 
 
@@ -61,7 +60,13 @@ class MaterialSampler:
         try:
             img = bpy.data.images.load(path, check_existing=True)
             w, h = img.size
-            return np.array(img.pixels[:], dtype=np.float32).reshape((h, w, 4))
+            arr = np.array(img.pixels[:], dtype=np.float32).reshape((h, w, 4))
+            # Free Blender image to avoid accumulating in bpy.data.images
+            try:
+                bpy.data.images.remove(img, do_unlink=True)
+            except Exception:
+                pass
+            return arr
         except Exception:
             return None
 
@@ -75,7 +80,6 @@ class MaterialSampler:
             'Roughness': 'ROUGHNESS',
             'Metallic': 'METAL',
             'Transmission': 'TRANSMISSION',
-            'NormalTS': 'NORMAL',
         }
         for k, suf in mapping.items():
             p = os.path.join(export_bake_dir, f"{base}_{suf}.png")
@@ -103,7 +107,6 @@ class MaterialSampler:
             key = (id(obj.data), id(mat), export_bake_dir if use_export_bakes else None)
             if key not in self.cache:
                 baked = self._load_export_bakes(obj, export_bake_dir) if use_export_bakes else {}
-                baked.pop('NormalTS', None)
                 self.cache[key] = baked
             baked = self.cache[key]
             out: Dict = {}
@@ -124,68 +127,7 @@ class MaterialSampler:
             out['metallic'] = pick_scalar('Metallic', 0.0)
             out['transmission'] = pick_scalar('Transmission', 0.0)
 
-            # Shading normal (tangent-space normal map) if present and enabled
-            n_px = baked.get('NormalTS')
-            if n_px is not None:
-                poly = mesh.polygons[poly_index]
-                loop_total = int(getattr(poly, "loop_total", len(poly.vertices)))
-                if loop_total > 4:
-                    n_px = None
-                    return out
-                r, g, b, _ = _sample_px_bilinear(n_px, uv)
-                nx = 2.0 * float(r) - 1.0
-                ny = 2.0 * float(g) - 1.0
-                nz = 2.0 * float(b) - 1.0
-                # Compute TBN
-                try:
-                    mesh.calc_tangents()
-                    mesh.calc_loop_triangles()
-                except RuntimeError:
-                    # Tangents require tris/quads; fall back to geometric normal when unavailable.
-                    n_px = None
-                if n_px is None:
-                    # Skip baked normal usage; geometric normal will be used later.
-                    return out
-                from mathutils import Vector
-                M = np.array(eval_obj.matrix_world.to_3x3(), dtype=np.float64)
-                # Find loop tri
-                for tri in mesh.loop_triangles:
-                    if tri.polygon_index != poly_index:
-                        continue
-                    l0, l1, l2 = tri.loops
-                    vi0 = mesh.loops[l0].vertex_index
-                    vi1 = mesh.loops[l1].vertex_index
-                    vi2 = mesh.loops[l2].vertex_index
-                    # bary for hit
-                    M_inv = eval_obj.matrix_world.inverted()
-                    hit_local = np.array(M_inv @ Vector(hit_world), dtype=np.float64)
-                    a = np.array(mesh.vertices[vi0].co, dtype=np.float64)
-                    b3 = np.array(mesh.vertices[vi1].co, dtype=np.float64)
-                    c = np.array(mesh.vertices[vi2].co, dtype=np.float64)
-                    u, v, w = _barycentric(hit_local, a, b3, c)
-                    t0 = np.array(mesh.loops[l0].tangent, dtype=np.float64)
-                    t1 = np.array(mesh.loops[l1].tangent, dtype=np.float64)
-                    t2 = np.array(mesh.loops[l2].tangent, dtype=np.float64)
-                    n0 = np.array(mesh.loops[l0].normal, dtype=np.float64)
-                    n1 = np.array(mesh.loops[l1].normal, dtype=np.float64)
-                    n2 = np.array(mesh.loops[l2].normal, dtype=np.float64)
-                    sign0 = float(getattr(mesh.loops[l0], 'bitangent_sign', 1.0))
-                    sign1 = float(getattr(mesh.loops[l1], 'bitangent_sign', 1.0))
-                    sign2 = float(getattr(mesh.loops[l2], 'bitangent_sign', 1.0))
-                    t = (u * t0 + v * t1 + w * t2)
-                    n = (u * n0 + v * n1 + w * n2)
-                    bvec = (u * (np.cross(n0, t0) * sign0) + v * (np.cross(n1, t1) * sign1) + w * (np.cross(n2, t2) * sign2))
-                    # to world
-                    T = M @ t; Nw = M @ n; B = M @ bvec
-                    def _nz(x):
-                        nrm = float(np.linalg.norm(x));
-                        return x / nrm if nrm > 1e-12 else x
-                    T = _nz(T); Nw = _nz(Nw); B = _nz(B)
-                    nw = nx * T + ny * B + nz * Nw
-                    nrm = float(np.linalg.norm(nw))
-                    if nrm > 1e-12:
-                        out['shading_normal_world'] = (nw / nrm).astype(np.float64)
-                    break
+            # Minimal setup: no tangent-space normal usage; geometric normal is used downstream.
 
             return out
         finally:

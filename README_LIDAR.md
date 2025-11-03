@@ -4,13 +4,13 @@ This tool generates LiDAR ground truth for Infinigen indoor scenes with indoor-f
 
 ## Features
 
-- Uses Infinigen export PBR bakes (required): UV + texture maps from procedural materials: Albedo/Base Color, Roughness, Metallic, Transmission, Normal.
+- Uses Infinigen export PBR bakes (required): UV + texture maps from procedural materials: Albedo/Base Color, Roughness, Metallic, Transmission.
 - Energy‑preserving reflectivity model (Lambert diffuse + Schlick specular) with metallic mixing and roughness shaping.
 - Transmission reduces opaque reflectance and enables a single pass‑through secondary; alpha is coverage (CLIP culls below threshold; BLEND/HASHED uses coverage).
 - Indoor‑oriented sensor presets: `VLP-16`, `HDL-32E`, `HDL-64E`, `OS1-128`.
 - Percentile auto‑exposure for 8‑bit intensity (float reflectivity retained for training).
 - Output frame control (sensor/camera/world); Open3D viewer with ring/intensity/reflectivity coloring.
-- Exports timestamps, TUM poses, metadata JSON, and PLY point clouds with reflectivity, transmittance, range, normals per frame (ASCII or binary).
+- Exports timestamps, TUM poses, metadata JSON, and PLY point clouds with reflectivity, transmittance, range (ASCII or binary).
 
 ## Usage
 
@@ -72,7 +72,7 @@ Key arguments:
   - `--preset`: Sensor preset loaded from `lidar_config.py`
   - `--force-azimuth-steps`: Explicit azimuth column count
 - Export PBR usage (required)
-  - `--export-bake-dir`: Folder with baked textures to sample (auto-detected when present next to the scene). Bakes are required; LiDAR does not evaluate node graphs at runtime.
+- `--export-bake-dir`: Folder with baked textures to sample. If omitted, LiDAR auto‑detects `export_<blendname>.blend/textures` next to the scene when present. Bakes are required; LiDAR does not evaluate node graphs at runtime.
 - Radiometry
   - `--secondary`: Enable pass‑through secondary returns for transmissive surfaces (uses defaults)
   - `--auto-expose`: Enable percentile‑based per‑frame scaling for the `intensity` column
@@ -97,8 +97,8 @@ Parameters:
 
 LiDAR uses the same PBR maps that Infinigen generates for export (UV + texture baking of procedural materials):
 
-- PBR inputs: Albedo/Base Color (RGB), Roughness (R), Metallic (R), Transmission (R), Normal (tangent‑space RGB). Alpha follows Blender semantics (CLIP threshold vs BLEND/HASHED coverage).
-- Shading normal: The baked tangent normal is converted to world space with TBN and used for cos(incidence) when present; otherwise the geometric normal is used. Backfaces are flipped for correct incidence.
+- PBR inputs: Albedo/Base Color (RGB), Roughness (R), Metallic (R), Transmission (R). Alpha follows Blender semantics (CLIP threshold vs BLEND/HASHED coverage).
+- Shading normal: The geometric (smoothed) surface normal is used for cos(incidence).
 - Reflectivity: Lambert diffuse + Schlick specular with metallic mixing and roughness shaping. Transmission reduces opaque reflectance and supplies residual for a single pass‑through secondary.
 - Intensity: `intensity` is 8‑bit (optional percentile auto‑exposure); `reflectivity` is a float channel for training.
 
@@ -150,7 +150,7 @@ Coordinate frames:
 
 ## Using Infinigen Export Bakes
 
-Infinigen’s exporter (infinigen/tools/export.py) bakes procedural materials to PBR maps for portability. LiDAR can reuse the same maps:
+Infinigen’s exporter (infinigen/tools/export.py) bakes procedural materials to PBR maps for portability. LiDAR reuses the same maps:
 
 1) Pre‑bake once per scene (fastest LiDAR runtime):
 
@@ -161,18 +161,24 @@ python -m infinigen.tools.export \
   -f usdc -r 1024
 ```
 
-This produces `outputs/MYJOB/SEED/export/textures/{object}_{BAKE}.png`. Then run LiDAR with:
+This produces textures under `outputs/MYJOB/SEED/export/export_scene.blend/textures/{object}_{BAKE}.png` (scene‑scoped folder). Then run LiDAR with:
 
 ```bash
-python -m infinigen.launch_blender --background --python lidar/lidar_generator.py -- \
+python -m infinigen.launch_blender -m lidar.lidar_generator -- \
   outputs/MYJOB/SEED/coarse/scene.blend \
-  --export-bake-dir outputs/MYJOB/SEED/export/textures \
+  --export-bake-dir outputs/MYJOB/SEED/export/export_scene.blend/textures \
   --frames 1-16 --camera Camera --preset VLP-16
+
+Tip: if you prefer a flatter path, create a symlink:
+
+```bash
+ln -sfn export_scene.blend/textures outputs/MYJOB/SEED/export/textures
+```
 ```
 
 2) Bakes are required: LiDAR does not evaluate node graphs at runtime. Always provide `--export-bake-dir` (or run the exporter task/bake script beforehand).
 
-Expected bake names: `{object_clean_name}_{DIFFUSE|ROUGHNESS|NORMAL|METAL|TRANSMISSION}.png`.
+Expected bake names: `{object_clean_name}_{DIFFUSE|ROUGHNESS|METAL|TRANSMISSION}.png`.
 
 Note on names: the exporter cleans object/material names by replacing spaces and dots with underscores. LiDAR’s sampler applies the same cleaning when looking up `{object_clean_name}_*.png`. If you rename objects after export, the sampler may miss maps. Re-export or pass a consistent name mapping.
 

@@ -201,7 +201,6 @@ def extract_material_properties(obj, poly_index, depsgraph, hit_world=None, cfg=
             if sampled:
                 for k in [
                     "base_color","roughness","metallic","transmission","opacity",
-                    "shading_normal_world",
                 ]:
                     if k in sampled and sampled[k] is not None:
                         props[k] = sampled[k]

@@ -320,6 +320,32 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None):
     args = parse_args(sys.argv[sys.argv.index("--") + 1:] if argv is None and "--" in sys.argv else (argv or sys.argv[1:]))
 
+    # Auto-detect baked textures dir if not provided. Check common exporter layouts:
+    #  - <scene_dir>/export_<scene_name>/textures
+    #  - <scene_dir>/export_scene.blend/textures (rare)
+    #  - <scene_dir>/../export/export_<scene_name>/textures
+    #  - <scene_dir>/../export/textures
+    def _auto_bake_dir(scene_path: str) -> str | None:
+        from pathlib import Path
+        try:
+            s = Path(scene_path)
+            scene_dir = s.parent
+            scene_name = s.name  # e.g., "scene.blend"
+            candidates = [
+                scene_dir / f"export_{scene_name}" / "textures",
+                scene_dir / "export_scene.blend" / "textures",
+                scene_dir.parent / "export" / f"export_{scene_name}" / "textures",
+                scene_dir.parent / "export" / "textures",
+            ]
+            for c in candidates:
+                if c.is_dir():
+                    return str(c)
+            return None
+        except Exception:
+            return None
+
+    auto_bake = args.export_bake_dir or _auto_bake_dir(args.scene_path)
+
     cfg_kwargs = dict(
         preset=args.preset,
         force_azimuth_steps=args.force_azimuth_steps,
@@ -330,7 +356,7 @@ def main(argv: Sequence[str] | None = None):
         prefer_ior=True,
         # Material sampling: require exporter bakes; never bake here
         use_export_bakes=True,
-        export_bake_dir=args.export_bake_dir,
+        export_bake_dir=auto_bake,
     )
 
     frames = _parse_frames(args.frames)

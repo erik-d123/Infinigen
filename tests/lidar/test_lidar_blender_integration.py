@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover
 from lidar.lidar_config import LidarConfig
 from lidar.lidar_generator import process_frame
 from lidar.intensity_model import extract_material_properties
+from tests.lidar._bake_utils import bake_current_scene
 
 
 def _reset_scene():
@@ -50,7 +51,7 @@ def _make_camera():
     return cam
 
 
-def test_extracts_principled_properties():
+def test_extracts_baked_properties(tmp_path: Path):
     scene = _reset_scene()
     plane, mat, bsdf = _make_plane_with_principled()
     # Set some Principled defaults
@@ -60,9 +61,18 @@ def test_extracts_principled_properties():
     bsdf.inputs["Specular" if "Specular" in bsdf.inputs else "Specular IOR Level"].default_value = 0.65
     bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
-    props = extract_material_properties(plane, 0, deps)
-    assert abs(props.get("metallic", 0.0) - 0.75) < 1e-3
-    assert abs(props.get("roughness", 0.0) - 0.15) < 5e-2
+    # Bake the scene and sample baked properties at a hit location
+    tex_dir = bake_current_scene(tmp_path, res=64)
+    cfg = LidarConfig()
+    cfg.export_bake_dir = str(tex_dir)
+    # Raycast to get polygon index and hit location
+    ray_origin = (0.0, 0.0, 3.0)
+    ray_dir = (0.0, 0.0, -1.0)
+    hit, loc, nrm, face_index, obj, _ = bpy.context.scene.ray_cast(deps, ray_origin, ray_dir, distance=10.0)
+    assert hit and obj == plane
+    props = extract_material_properties(plane, int(face_index), deps, hit_world=loc, cfg=cfg)
+    assert abs(props.get("metallic", 0.0) - 0.75) < 1e-2
+    assert abs(props.get("roughness", 0.0) - 0.15) < 1e-1
     assert 'base_color' in props
 
 
@@ -81,7 +91,9 @@ def test_alpha_clip_culls_hits(tmp_path: Path):
     cfg = LidarConfig(preset="VLP-16")
     cfg.auto_expose = False
     cfg.force_azimuth_steps = 180
-    cfg.bake_pbr = False  # keep test fast
+    # Bake and point LiDAR to baked textures
+    tex_dir = bake_current_scene(tmp_path, res=64)
+    cfg.export_bake_dir = str(tex_dir)
 
     out_dir = tmp_path / "lidar"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -128,9 +140,10 @@ def test_baked_normal_produces_shading_normal(tmp_path: Path):
     hit, loc, nrm, face_index, obj, _ = scene.ray_cast(deps, ray_origin, ray_dir, distance=10.0)
     assert hit and obj == plane
 
-    # In baked-only mode, extractor provides shading_normal_world only when a baked NormalTS map is available.
     from lidar.lidar_config import LidarConfig
     cfg = LidarConfig()
+    # Even with bakes, we do not include shading normals in minimal setup
+    tex_dir = bake_current_scene(tmp_path, res=32)
+    cfg.export_bake_dir = str(tex_dir)
     props = extract_material_properties(plane, int(face_index), deps, hit_world=loc, cfg=cfg)
-    # No export_bake_dir provided in this test, so no baked normal is available.
     assert "shading_normal_world" not in props

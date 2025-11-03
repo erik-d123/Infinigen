@@ -3,9 +3,9 @@
 
 # Authors: Vineet Bansal
 
-import bpy
 import gin
 import pytest
+import bpy
 
 
 @pytest.fixture(scope="function", autouse=True)

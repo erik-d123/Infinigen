@@ -12,6 +12,7 @@ except Exception:  # pragma: no cover
 
 from lidar.lidar_config import LidarConfig
 from lidar.lidar_raycast import perform_raycasting
+from tests.lidar._bake_utils import bake_current_scene
 
 
 def _reset_scene():
@@ -55,6 +56,8 @@ def test_animation_variation_changes_range(tmp_path):
 
     cfg = LidarConfig()
     cfg.auto_expose = False
+    tex_dir = bake_current_scene(tmp_path, res=64)
+    cfg.export_bake_dir = str(tex_dir)
 
     # Frame 1: plane at z=0
     scene.frame_set(1)
@@ -71,4 +74,6 @@ def test_animation_variation_changes_range(tmp_path):
 
     assert res1["range_m"].size == 1 and res2["range_m"].size == 1
     assert res2["range_m"][0] > res1["range_m"][0]
-
+    # With auto_expose off, farther should not be brighter
+    if res1["intensity"].size and res2["intensity"].size:
+        assert int(res2["intensity"][0]) <= int(res1["intensity"][0])

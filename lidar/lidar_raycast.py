@@ -138,8 +138,8 @@ def perform_raycasting(
 
         # Material extraction
         props = extract_material_properties(obj, int(face_index), depsgraph, loc, cfg)
-        # Prefer shading normal if provided by sampler, else geometric; flip if backfacing
-        sh_nrm = np.array(props.get("shading_normal_world", nrm), dtype=np.float64)
+        # Geometric normal only; flip if backfacing
+        sh_nrm = nrm
         if np.dot(sh_nrm, d) > 0:
             sh_nrm = -sh_nrm
         cos_i = _compute_cos_i(sh_nrm, d)
