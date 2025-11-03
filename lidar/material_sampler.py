@@ -103,6 +103,7 @@ class MaterialSampler:
             key = (id(obj.data), id(mat), export_bake_dir if use_export_bakes else None)
             if key not in self.cache:
                 baked = self._load_export_bakes(obj, export_bake_dir) if use_export_bakes else {}
+                baked.pop('NormalTS', None)
                 self.cache[key] = baked
             baked = self.cache[key]
             out: Dict = {}
@@ -126,13 +127,25 @@ class MaterialSampler:
             # Shading normal (tangent-space normal map) if present and enabled
             n_px = baked.get('NormalTS')
             if n_px is not None:
+                poly = mesh.polygons[poly_index]
+                loop_total = int(getattr(poly, "loop_total", len(poly.vertices)))
+                if loop_total > 4:
+                    n_px = None
+                    return out
                 r, g, b, _ = _sample_px_bilinear(n_px, uv)
                 nx = 2.0 * float(r) - 1.0
                 ny = 2.0 * float(g) - 1.0
                 nz = 2.0 * float(b) - 1.0
                 # Compute TBN
-                mesh.calc_tangents()
-                mesh.calc_loop_triangles()
+                try:
+                    mesh.calc_tangents()
+                    mesh.calc_loop_triangles()
+                except RuntimeError:
+                    # Tangents require tris/quads; fall back to geometric normal when unavailable.
+                    n_px = None
+                if n_px is None:
+                    # Skip baked normal usage; geometric normal will be used later.
+                    return out
                 from mathutils import Vector
                 M = np.array(eval_obj.matrix_world.to_3x3(), dtype=np.float64)
                 # Find loop tri

@@ -8,4 +8,9 @@ import os
 import sys
 
 pwd = os.getcwd()
-sys.path.append(pwd)
+if pwd not in sys.path:
+    sys.path.append(pwd)
+
+vendor = os.path.join(pwd, ".blender_site")
+if os.path.isdir(vendor) and vendor not in sys.path:
+    sys.path.append(vendor)
