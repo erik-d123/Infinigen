@@ -1,241 +1,106 @@
-# Infinigen LiDAR Ground Truth Generator
+# Infinigen Indoors LiDAR (Baked‑Only)
 
-This tool generates LiDAR ground truth for Infinigen indoor scenes with indoor-focused defaults (close-range hits enabled, no atmospheric attenuation, dense returns). Run commands from the repository root unless otherwise noted.
+Indoor LiDAR ground truth for Infinigen scenes. This implementation is intentionally lightweight and material‑faithful: it samples only exporter‑baked PBR textures (no live node evaluation), uses a compact Lambert + Schlick model for reflectivity, and writes standard PLY + camview outputs.
 
-## Features
+**Design Goals**
+- Respect Infinigen/Blender materials via exporter bakes
+- Keep the reflectivity model compact, bounded, and fast
+- Provide clear, reproducible outputs for training and evaluation
 
-- Uses Infinigen export PBR bakes (required): UV + texture maps from procedural materials: Albedo/Base Color, Roughness, Metallic, Transmission.
-- Energy‑preserving reflectivity model (Lambert diffuse + Schlick specular) with metallic mixing and roughness shaping.
-- Transmission reduces opaque reflectance and enables a single pass‑through secondary; alpha is coverage (CLIP culls below threshold; BLEND/HASHED uses coverage).
-- Indoor‑oriented sensor presets: `VLP-16`, `HDL-32E`, `HDL-64E`, `OS1-128`.
-- Percentile auto‑exposure for 8‑bit intensity (float reflectivity retained for training).
-- Output frame control (sensor/camera/world); Open3D viewer with ring/intensity/reflectivity coloring.
-- Exports timestamps, TUM poses, metadata JSON, and PLY point clouds with reflectivity, transmittance, range (ASCII or binary).
+**What It Does**
+- Samples per‑hit PBR values (Base Color, Roughness, Metallic, Transmission) from baked textures at UVs
+- Computes reflectivity from Lambert + Schlick with metallic mixing and roughness shaping
+- Applies alpha semantics once per surface (CLIP vs BLEND/HASHED)
+- Emits a single optional pass‑through secondary for transmissive surfaces
+- Writes PLY point clouds + camview intrinsics/extrinsics and calibration
 
-## Usage
+## Materials & Baked Inputs
+- Baked‑only semantics. No node‑graph evaluation at runtime; no runtime baking.
+- Per‑hit inputs read from exporter textures: Base Color (RGB), Roughness (R), Metallic (R), Transmission (R).
+- Alpha (coverage) source: Principled “Alpha” (if unlinked). Default opacity used when Alpha is unset. (Optional: add an “ALPHA” bake if you want per‑pixel coverage.)
+- Incidence normal: geometric (smoothed) normal at the hit in the minimal mode.
+- Bake locations: typically `export/export_scene.blend/textures/{object}_{DIFFUSE|ROUGHNESS|METAL|TRANSMISSION}.png` next to the scene.
 
-### Quickstart Script
+## Alpha Semantics
+- CLIP (alpha clip)
+  - If coverage A < alpha_threshold → cull the hit entirely (no return)
+  - If A ≥ threshold → keep the hit at full strength (no scaling)
+- BLEND / HASHED
+  - Never cull by threshold
+  - Scale reflectivity and intensity by coverage A (0..1)
+- Secondary returns: coverage is applied per surface along the path (primary and secondary surfaces each apply their rule)
 
-```bash
-./generate_and_view_lidar.sh path/to/scene.blend
-```
+## Reflectivity & Intensity (High‑Level)
+- Fresnel (Schlick): F(c) with F0 from IOR/specular for dielectrics; metallic tints F0 by Base Color
+- Specular: `R_spec = F(c) · (1 − roughness)^2` (dielectrics also scaled by Specular)
+- Diffuse (Lambert, no 1/π): `R_diff = (1 − metallic) · (1 − F) · albedo_luma · cos_incidence`
+- Transmission: `T_mat = (1 − metallic) · Transmission`; final `Reflectivity = (1 − T_mat) · clamp(R_spec + R_diff)`
+- Intensity (pre‑exposure): `Intensity_raw = Reflectivity / distance^p` (p≈2)
+- Alpha application at raycaster (once):
+  - CLIP: cull when A < threshold; otherwise do not scale
+  - BLEND/HASHED: never cull; scale by coverage A
+- Secondary pass (optional): residual energy ∝ `T_mat · (1 − F) · (1 − trans_roughness)^2`; optional merge by range epsilon keeps the stronger return
+- Exposure (8‑bit intensity only): percentile mapping per‑frame when enabled; reflectivity remains linear (float)
 
-The script:
-- Creates a timestamped output directory `outputs/{preset}/{scene_name}/{YYYYmmdd_HHMMSS}`
-- Launches Blender in background mode with the LiDAR generator
-- Prints ready-to-run viewer commands
-
-Optional positional arguments (in order):
-- `path/to/scene.blend`
-- `output_dir` (overrides automatic path)
-- `frames` (e.g. `1-48` or `1,5,10`)
-- `camera` object name (default `Camera`)
-- `preset` (`VLP-16`, `HDL-32E`, `HDL-64E`, `OS1-128`)
-- `force_azimuth_steps` (integer override for azimuth columns)
-
-### Direct CLI
-
-```bash
-python -m infinigen.launch_blender -m lidar.lidar_generator -- \
-  path/to/scene.blend \
-  --export-bake-dir path/to/export/textures \
-  --output_dir outputs/my_scan \
-  --frames 1-48 \
-  --camera Camera \
-  --preset VLP-16 \
-  --ply-frame sensor \
-  --ply-binary \
-  --seed 0
-```
-
-### Programmatic Use (inside Blender)
-
-```python
-from lidar.lidar_generator import generate_for_scene
-
-generate_for_scene(
-    scene_path="outputs/indoors/example/scene.blend",
-    output_dir="outputs/lidar/example",
-    frames=[1, 2, 3],
-    camera_name="Camera",
-    cfg_kwargs={"preset": "HDL-32E", "auto_expose": True},
-)
-```
-
-Key arguments:
-- Output and camera
-  - `--output_dir`: Destination directory (auto‑generated if omitted)
-  - `--frames`: Single value, comma list, or inclusive range
-  - `--camera`: Camera treated as the LiDAR sensor (first camera by default)
-  - `--ply-frame`: Output frame for PLYs (`sensor`, `camera`, `world`)
-- Sensor and resolution
-  - `--preset`: Sensor preset loaded from `lidar_config.py`
-  - `--force-azimuth-steps`: Explicit azimuth column count
-- Export PBR usage (required)
-- `--export-bake-dir`: Folder with baked textures to sample. If omitted, LiDAR auto‑detects `export_<blendname>.blend/textures` next to the scene when present. Bakes are required; LiDAR does not evaluate node graphs at runtime.
-- Radiometry
-  - `--secondary`: Enable pass‑through secondary returns for transmissive surfaces (uses defaults)
-  - `--auto-expose`: Enable percentile‑based per‑frame scaling for the `intensity` column
-- Misc
-  - `--ply-binary`: Emit binary PLY files instead of ASCII
-  - `--seed`: Seed for numpy/random (continuous spin still advances phase per frame)
-
-### Viewer
-
-```bash
-python lidar/lidar_viewer.py path/to/output_dir --color intensity --view world
-```
-
-Parameters:
-- `path/to/output_dir`: Directory produced by the generator (must contain `lidar_frame_*.ply`)
-- `--color`: Initial coloring mode (`intensity`, `reflectivity`, or `ring`)
-- `--view`: Initial viewpoint (`world` or `camera`; `--camera-view` is a shortcut)
-- `--frame`: Load a specific frame immediately
-- `--no-trajectory`: Hide the camera path overlay
-
-## Material Realization & Intensity
-
-LiDAR uses the same PBR maps that Infinigen generates for export (UV + texture baking of procedural materials):
-
-- PBR inputs: Albedo/Base Color (RGB), Roughness (R), Metallic (R), Transmission (R). Alpha follows Blender semantics (CLIP threshold vs BLEND/HASHED coverage).
-- Shading normal: The geometric (smoothed) surface normal is used for cos(incidence).
-- Reflectivity: Lambert diffuse + Schlick specular with metallic mixing and roughness shaping. Transmission reduces opaque reflectance and supplies residual for a single pass‑through secondary.
-- Intensity: `intensity` is 8‑bit (optional percentile auto‑exposure); `reflectivity` is a float channel for training.
-
-### Requirements
-
-- Export‑baked textures are required. Bake once per scene (or reuse any prior export) and point `--export-bake-dir` to the textures folder. Runtime LiDAR only samples these textures at UVs; it does not evaluate node graphs.
-
+## CLI & Configuration (Quick Reference)
+- Scene & camera
+  - scene_path: .blend file for the scene
+  - --camera: camera object name (defaults to scene.camera, or first camera)
+  - --frames: single value, comma list, or inclusive range
+- Baked textures (required)
+  - --export-bake-dir: folder with baked textures; auto‑detected near the scene when present; else a clear error is raised
+- Output framing & files
+  - --output_dir: destination folder (auto‑created)
+  - --ply-frame: `sensor` (default, +X forward, +Y left, +Z up), `camera`, or `world`
+  - --ply-binary: binary PLY instead of ASCII
+- Sensor sampling
+  - --preset: `VLP-16`, `HDL-32E`, `HDL-64E`, `OS1-128`
+  - --force-azimuth-steps: override azimuth samples per ring
+- Radiometry & exposure
+  - --secondary: enable single pass‑through return
+  - --auto-expose: remap 95th percentile of positive intensities; reflectivity remains unscaled
+  - --seed: seed for NumPy/random (geometry unchanged; ray pattern deterministic by preset)
 
 ## Outputs
+- PLY per frame (ASCII or binary): xyz, intensity (U8), ring, azimuth, elevation, return_id, num_returns; optional: range_m, cos_incidence, mat_class, reflectivity (float), transmittance (float), normals
+- camview npz: intrinsics K, extrinsics T, and resolution HW for consumers that expect Infinigen camview format
+- lidar_calib.json: sensor_to_camera_R_cs, frame mode, and key sensor parameters
+- trajectory.json and timestamps.txt: minimal trajectory and frame times
 
-- `lidar_frame_XXXX.ply`: Per-frame point clouds in the chosen frame (with intensity, reflectivity, range, normals)
-- `lidar_config.json`: Serialized `LidarConfig` used for the run
-- `frame_metadata.json`: Per-frame point counts and intensity scale factors
-- `trajectory.json`: Camera translations indexed by frame
-- `timestamps.txt`: Seconds from the first frame (derived from scene FPS)
-- `poses_tum.txt`: TUM-format poses `timestamp tx ty tz qx qy qz qw`
-> The `intensity` column in the PLY is per-frame scaled for visualization. Use the `reflectivity` float column (and `range_m`) for training or quantitative analysis. The `transmittance` column mirrors the Principled `Transmission` value for the surface hit (auto exposure only adjusts the 8-bit `intensity`).
+## Workflow & Integration
+1) Generate Indoors scene(s)
+2) Bake exporter textures once per scene (Base Color, Roughness, Metallic, Transmission)
+3) Run LiDAR with the baked textures path (auto‑detected for common layouts)
+4) Use the PLY/camview/calibration for downstream tasks
 
-### PLY Structure
+## Troubleshooting & Notes
+- Missing textures folder: ensure the exporter ran; provide `--export-bake-dir` or re‑run the bake
+- CLIP yields zero points when coverage < threshold; use BLEND/HASHED to scale by coverage
+- Reflectivity is a linear float channel for training; intensity is 8‑bit for visualization/storage
+- Minimal mode uses geometric normals only; NormalTS can be added later with triangulation at export
 
-```
-ply
-format ascii 1.0
-comment Lidar frame 0042
-element vertex NNNNN
-property float x
-property float y
-property float z
-property uchar intensity
-property ushort ring
-property float azimuth
-property float elevation
-property float time_offset
-property uchar return_id
-property uchar num_returns
-property float range_m
-property float cos_incidence    # when plyfile installed
-property uchar mat_class        # when plyfile installed
-property float reflectivity     # when plyfile installed
-property float transmittance    # when pass-through enabled (or legacy exposure scale)
-end_header
-...
-```
+## Testing & Validation
 
-Coordinate frames:
-- `sensor`: +X forward, +Y left, +Z up (ROS-style; default)
-- `camera`: Blender camera space (+X right, +Y up, -Z forward)
-- `world`: Blender world coordinates
+- Runner
+  - All tests run inside Blender (headless) via `scripts/run_lidar_tests.sh` which injects `.blender_site` and invokes pytest within Blender’s Python.
 
-## Using Infinigen Export Bakes
+- Bake fixture
+  - Tests first try the real exporter (tiny resolution) in a separate Blender process.
+  - If textures are not produced (e.g., GPU/driver limits), tests synthesize tiny “fake bakes” that encode Principled defaults at the expected exporter filenames, preserving baked‑only semantics with stable CI behavior.
 
-Infinigen’s exporter (infinigen/tools/export.py) bakes procedural materials to PBR maps for portability. LiDAR reuses the same maps:
+- Coverage (what the suite checks)
+  - Intensity model (unit): energy bound, distance law (1/r^p), metallic Fresnel, IOR preference, alpha coverage reporting.
+  - Materials (baked): albedo scaling requires re‑bake; baked property extraction at a hit; alpha semantics (BLEND scales, CLIP culls below threshold).
+  - Kinematics (baked): tilt reduces intensity; moving the plane farther increases range (and does not brighten with auto‑expose off); animation across frames behaves plausibly.
+  - Transmission (baked): transmissive near‑surface reflectivity is not higher than opaque; optional secondary or merge by range epsilon; nearest‑return comparison robust to ordering.
+  - I/O: `process_frame` writes PLY, camview npz (K,T,HW), and `lidar_calib.json` with expected keys.
 
-1) Pre‑bake once per scene (fastest LiDAR runtime):
+- How to run
+  - Full suite: `bash scripts/run_lidar_tests.sh`
+  - Or explicitly: `python -m infinigen.launch_blender -m infinigen.tools.blendscript_path_append --python scripts/run_lidar_pytest.py -- --factory-startup -q tests/lidar`
 
-```bash
-python -m infinigen.tools.export \
-  --input_folder outputs/MYJOB/SEED/coarse \
-  --output_folder outputs/MYJOB/SEED/export \
-  -f usdc -r 1024
-```
-
-This produces textures under `outputs/MYJOB/SEED/export/export_scene.blend/textures/{object}_{BAKE}.png` (scene‑scoped folder). Then run LiDAR with:
-
-```bash
-python -m infinigen.launch_blender -m lidar.lidar_generator -- \
-  outputs/MYJOB/SEED/coarse/scene.blend \
-  --export-bake-dir outputs/MYJOB/SEED/export/export_scene.blend/textures \
-  --frames 1-16 --camera Camera --preset VLP-16
-
-Tip: if you prefer a flatter path, create a symlink:
-
-```bash
-ln -sfn export_scene.blend/textures outputs/MYJOB/SEED/export/textures
-```
-```
-
-2) Bakes are required: LiDAR does not evaluate node graphs at runtime. Always provide `--export-bake-dir` (or run the exporter task/bake script beforehand).
-
-Expected bake names: `{object_clean_name}_{DIFFUSE|ROUGHNESS|METAL|TRANSMISSION}.png`.
-
-Note on names: the exporter cleans object/material names by replacing spaces and dots with underscores. LiDAR’s sampler applies the same cleaning when looking up `{object_clean_name}_*.png`. If you rename objects after export, the sampler may miss maps. Re-export or pass a consistent name mapping.
-
-Optional geometry alignment: for small occlusion differences on displaced indoor walls, enable room ocmeshing during scene generation so LiDAR and render raycast the same realized geometry. Use an override when generating indoors scenes:
-
-```
-python -m infinigen.datagen.manage_jobs ... \
-  --pipeline_overrides get_cmd.driver_script='infinigen_examples.generate_indoors' \
-  --overrides compose_indoors.enable_ocmesh_room=True
-```
-
-## Pipeline Integration (Preview)
-
-We plan to add a `lidar.gin` and `queue_lidar` so LiDAR runs as a camera‑dependent task in manage_jobs. A recommended setup is:
-- Global task: run the exporter bake once per scene (`bake_scene`) to a textures folder.
-- Camera task: run LiDAR with `--export-bake-dir` pointing to that folder.
-
-This makes LiDAR outputs slot alongside images/GT with consistent material realization and performance.
-
-## Viewer Controls
-
-- Enter frame number: jump to that frame
-- `n` / `+`: next frame
-- `p` / `-`: previous frame
-- `f`: first frame
-- `l`: last frame
-- `t`: toggle trajectory
-- `c`: toggle coloring modes
-- `v`: toggle world <-> camera view
-- `q`: quit
-
-## References and Documentation
-
-### Velodyne VLP-16 Specifications
-- [Velodyne VLP-16 User Manual](https://velodynelidar.com/wp-content/uploads/2019/12/63-9243-Rev-E-VLP-16-User-Manual.pdf)
-- [VLP-16 Datasheet](https://velodynelidar.com/products/puck/)
-- [Velodyne Sensor Angle Mapping](https://velodynelidar.com/wp-content/uploads/2019/09/PuckChannelMapping.pdf)
-
-### LiDAR Intensity Calculation
-- [On Intensity and Range Calibration of Velodyne's Puck Sensor](https://www.mdpi.com/1424-8220/20/11/3217)
-- [Intensity Calibration for Automated Segmentation of 3D LiDAR Data](https://ieeexplore.ieee.org/document/8675366)
-- [Physics-Based Intensity Correction for Point Cloud Data](https://www.int-arch-photogramm-remote-sens-spatial-inf-sci.net/XLII-3/413/2018/isprs-archives-XLII-3-413-2018.pdf)
-
-### Ray Casting and Point Cloud Generation
-- [Open3D Documentation](http://www.open3d.org/docs/release/)
-- [Blender Python API: Ray Casting](https://docs.blender.org/api/current/bpy.types.Scene.html#bpy.types.Scene.ray_cast)
-- [PLY File Format](http://paulbourke.net/dataformats/ply/)
-
-## Tests
-
-Unit tests and Blender integration tests live in `tests/lidar/`:
-- Unit: default opacity fallback, angle vs intensity, transmission vs reflectivity and secondary, clearcoat effects, energy bound.
-- Integration (when `bpy` is available): Principled property extraction; alpha CLIP culling; planar animation/centroid change.
-
-Run: `pytest tests/lidar -q` (Blender tests auto‑skip without `bpy`).
-
-### Related Research
-- [Sensor-Realistic LiDAR Simulation](https://arxiv.org/pdf/2208.05961.pdf)
-- [Simulating LiDAR Point Clouds for Autonomous Driving](https://arxiv.org/pdf/2008.08439.pdf)
-- [LiDAR Intensity Calibration: A Review](https://www.mdpi.com/2072-4292/12/17/2697)
+- Optional additions (if desired)
+  - Auto‑exposure sanity (95th percentile mapping; reflectivity unchanged).
+  - Grazing‑dropout behavior for shallow incidence.
+  - UV orientation micro‑check (prevent vertical flips on texture sampling).
+  - Binary PLY smoke test.

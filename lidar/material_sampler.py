@@ -3,15 +3,12 @@ MaterialSampler: caches baked PBR maps per (object, material) and provides fast 
 """
 
 from __future__ import annotations
-from typing import Dict, Optional, Tuple
 
 import os
-import numpy as np
+from typing import Dict, Optional, Tuple
 
-try:
-    import bpy
-except Exception:
-    bpy = None
+import bpy
+import numpy as np
 
 from lidar.mesh_uv import hit_uv as _hit_uv  # reuse
 
@@ -25,9 +22,12 @@ def _sample_px_bilinear(px: np.ndarray, uv: Tuple[float, float]) -> np.ndarray:
     v = float(uv[1]) % 1.0
     x = u * (w - 1)
     y = v * (h - 1)
-    x0 = int(np.floor(x)); x1 = min(w - 1, x0 + 1)
-    y0 = int(np.floor(y)); y1 = min(h - 1, y0 + 1)
-    dx = x - x0; dy = y - y0
+    x0 = int(np.floor(x))
+    x1 = min(w - 1, x0 + 1)
+    y0 = int(np.floor(y))
+    y1 = min(h - 1, y0 + 1)
+    dx = x - x0
+    dy = y - y0
     c00 = px[y0, x0]
     c10 = px[y0, x1]
     c01 = px[y1, x0]
@@ -38,12 +38,20 @@ def _sample_px_bilinear(px: np.ndarray, uv: Tuple[float, float]) -> np.ndarray:
     return c
 
 
+BAKE_SUFFIX_MAP = {
+    "Base Color": "DIFFUSE",
+    "Roughness": "ROUGHNESS",
+    "Metallic": "METAL",
+    "Transmission": "TRANSMISSION",
+}
+
+
 class MaterialSampler:
     _inst: Optional["MaterialSampler"] = None
 
     def __init__(self):
-        # cache key includes optional export bake dir so we don't mix sources
-        self.cache: Dict[Tuple[int, int, Optional[str]], Dict[str, np.ndarray]] = {}
+        # Cache baked maps per (mesh_name, material_name, bake_dir)
+        self.cache: Dict[Tuple[str, str, Optional[str]], Dict[str, np.ndarray]] = {}
 
     @classmethod
     def get(cls) -> "MaterialSampler":
@@ -70,28 +78,28 @@ class MaterialSampler:
         except Exception:
             return None
 
-    def _load_export_bakes(self, obj, export_bake_dir: Optional[str]) -> Dict[str, np.ndarray]:
+    def _load_export_bakes(
+        self, obj, export_bake_dir: Optional[str]
+    ) -> Dict[str, np.ndarray]:
         if export_bake_dir is None:
             return {}
         base = self._clean_name(obj.name)
         out: Dict[str, np.ndarray] = {}
-        mapping = {
-            'Base Color': 'DIFFUSE',
-            'Roughness': 'ROUGHNESS',
-            'Metallic': 'METAL',
-            'Transmission': 'TRANSMISSION',
-        }
-        for k, suf in mapping.items():
+        for k, suf in BAKE_SUFFIX_MAP.items():
             p = os.path.join(export_bake_dir, f"{base}_{suf}.png")
             arr = self._load_png(p)
             if arr is not None:
                 out[k] = arr
         return out
 
-    def sample_properties(self, obj, depsgraph, poly_index: int, hit_world, res: int,
-                          export_bake_dir: Optional[str] = None, use_export_bakes: bool = True) -> Optional[Dict]:
-        if bpy is None:
-            return None
+    def sample_properties(
+        self,
+        obj,
+        depsgraph,
+        poly_index: int,
+        hit_world,
+        export_bake_dir: Optional[str] = None,
+    ) -> Optional[Dict]:
         eval_obj = obj.evaluated_get(depsgraph)
         mesh = eval_obj.to_mesh()
         try:
@@ -100,34 +108,40 @@ class MaterialSampler:
                 return None
             # find material of polygon
             poly = mesh.polygons[poly_index]
-            mat_idx = int(getattr(poly, 'material_index', 0))
-            mat = obj.material_slots[mat_idx].material if (obj.material_slots and mat_idx < len(obj.material_slots)) else obj.active_material
+            mat_idx = int(getattr(poly, "material_index", 0))
+            mat = (
+                obj.material_slots[mat_idx].material
+                if (obj.material_slots and mat_idx < len(obj.material_slots))
+                else obj.active_material
+            )
             if mat is None:
                 return None
-            key = (id(obj.data), id(mat), export_bake_dir if use_export_bakes else None)
+            mesh_name = getattr(obj.data, "name", "") or ""
+            mat_name = getattr(mat, "name", "") or ""
+            key = (mesh_name, mat_name, export_bake_dir)
             if key not in self.cache:
-                baked = self._load_export_bakes(obj, export_bake_dir) if use_export_bakes else {}
+                baked = self._load_export_bakes(obj, export_bake_dir)
                 self.cache[key] = baked
             baked = self.cache[key]
             out: Dict = {}
+
             def pick_scalar(name: str, default=0.0):
                 px = baked.get(name)
                 if px is None:
                     return default
                 return float(_sample_px_bilinear(px, uv)[0])
-            def pick_rgb(name: str, default=(1.0,1.0,1.0)):
+
+            def pick_rgb(name: str, default=(1.0, 1.0, 1.0)):
                 px = baked.get(name)
                 if px is None:
                     return default
                 r, g, b, _ = _sample_px_bilinear(px, uv)
                 return (float(r), float(g), float(b))
 
-            out['base_color'] = pick_rgb('Base Color', (1.0, 1.0, 1.0))
-            out['roughness'] = pick_scalar('Roughness', 0.5)
-            out['metallic'] = pick_scalar('Metallic', 0.0)
-            out['transmission'] = pick_scalar('Transmission', 0.0)
-
-            # Minimal setup: no tangent-space normal usage; geometric normal is used downstream.
+            out["base_color"] = pick_rgb("Base Color", (1.0, 1.0, 1.0))
+            out["roughness"] = pick_scalar("Roughness", 0.5)
+            out["metallic"] = pick_scalar("Metallic", 0.0)
+            out["transmission"] = pick_scalar("Transmission", 0.0)
 
             return out
         finally:

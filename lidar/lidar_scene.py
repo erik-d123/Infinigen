@@ -1,15 +1,13 @@
-# SPDX-License-Identifier: MIT
+# Copyright (C) 2024, Princeton University.
+# This source code is licensed under the BSD 3-Clause license found in the LICENSE file in the root directory of this source tree.
 # Scene helpers: camera resolution and sensor<->camera frame mapping
 
 from __future__ import annotations
-from typing import Tuple, Optional
 
+from typing import Optional, Tuple
+
+import bpy
 import numpy as np
-
-try:
-    import bpy
-except Exception:
-    bpy = None
 
 
 def sensor_to_camera_rotation() -> np.ndarray:
@@ -25,9 +23,9 @@ def sensor_to_camera_rotation() -> np.ndarray:
     """
     R = np.array(
         [
-            [0.0, -1.0,  0.0],  # camera X  <- { -Y_sensor }
-            [0.0,  0.0,  1.0],  # camera Y  <- { +Z_sensor }
-            [-1.0, 0.0,  0.0],  # camera Z  <- { -X_sensor }
+            [0.0, -1.0, 0.0],  # camera X  <- { -Y_sensor }
+            [0.0, 0.0, 1.0],  # camera Y  <- { +Z_sensor }
+            [-1.0, 0.0, 0.0],  # camera Z  <- { -X_sensor }
         ],
         dtype=float,
     )
@@ -55,7 +53,9 @@ def resolve_camera(scene, camera_name: Optional[str] = None):
     raise RuntimeError("No camera found in scene")
 
 
-def setup_scene(scene_path: str, camera_name: Optional[str] = None) -> Tuple[object, object]:
+def setup_scene(
+    scene_path: str, camera_name: Optional[str] = None
+) -> Tuple[object, object]:
     """
     Open a .blend and return (scene, camera).
     """

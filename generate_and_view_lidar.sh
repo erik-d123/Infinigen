@@ -9,7 +9,7 @@ FRAMES="29-30"
 CAMERA="Camera"
 
 # Sensor preset (resolution determined by preset policy)
-PRESET="VLP-16"   # VLP-16 | HDL-32E | HDL-64E | OS1-128
+PRESET="OS1-128"   # VLP-16 | HDL-32E | HDL-64E | OS1-128
 
 # Output frame for PLY (sensor recommended for LiDAR POV)
 PLY_FRAME="sensor"     # sensor | camera | world

@@ -671,7 +671,9 @@ def queue_export_bake_textures(
             input_folder = candidate
             break
     else:
-        logger.warning(f"No scene.blend found under {folder}/fine or {folder}/coarse for export bake")
+        logger.warning(
+            f"No scene.blend found under {folder}/fine or {folder}/coarse for export bake"
+        )
         return states.JOB_OBJ_SUCCEEDED, None
 
     export_out = Path(folder) / "export"
@@ -738,7 +740,9 @@ def queue_lidar(
             input_folder = candidate
             break
     else:
-        logger.warning(f"No scene.blend found under {folder} for any of {input_folder_priority_options}")
+        logger.warning(
+            f"No scene.blend found under {folder} for any of {input_folder_priority_options}"
+        )
         return states.JOB_OBJ_SUCCEEDED, None
 
     # Camera + frame block
@@ -746,7 +750,11 @@ def queue_lidar(
     subcam = output_indices.get("subcam", 0) if output_indices else 0
     cam_name = f"camera_{cam_rig}_{subcam}"
     start_frame = output_indices.get("frame", 1) if output_indices else 1
-    last_cam_frame = output_indices.get("last_cam_frame", start_frame) if output_indices else start_frame
+    last_cam_frame = (
+        output_indices.get("last_cam_frame", start_frame)
+        if output_indices
+        else start_frame
+    )
 
     # Output directory for LiDAR
     out_dir = Path(folder) / f"frames_lidar{output_suffix}"
@@ -757,13 +765,21 @@ def queue_lidar(
 
     # Build command line (no gin overrides here; this script has its own CLI)
     cmd = [
-        sys.executable, "-m", "infinigen.launch_blender",
-        "-m", "lidar.lidar_generator", "--",
+        sys.executable,
+        "-m",
+        "infinigen.launch_blender",
+        "-m",
+        "lidar.lidar_generator",
+        "--",
         str(input_folder / "scene.blend"),
-        "--output_dir", str(out_dir),
-        "--frames", f"{start_frame}-{last_cam_frame}",
-        "--camera", cam_name,
-        "--export-bake-dir", str(export_bake_dir),
+        "--output_dir",
+        str(out_dir),
+        "--frames",
+        f"{start_frame}-{last_cam_frame}",
+        "--camera",
+        cam_name,
+        "--export-bake-dir",
+        str(export_bake_dir),
     ]
 
     with (folder / "run_pipeline.sh").open("a") as f:

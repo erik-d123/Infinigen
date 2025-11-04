@@ -1,44 +1,44 @@
 from __future__ import annotations
+
 import argparse
 import json
 import math
 import os
 import random
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import List, Sequence
 
+import bpy
 import numpy as np
 
-try:
-    import bpy
-except Exception:
-    bpy = None
-
+from infinigen.core.util import camera as util_cam
 from lidar.lidar_config import LidarConfig
+from lidar.lidar_io import save_ply
 from lidar.lidar_raycast import generate_sensor_rays, perform_raycasting
 from lidar.lidar_scene import resolve_camera, sensor_to_camera_rotation
-from infinigen.core.util import camera as util_cam
-import os
-import shutil
-from lidar.lidar_io import save_ply
+
 
 def _parse_frames(frames_arg: str) -> List[int]:
     """Accept '1-48', '1,5,10', or single '12'."""
     s = str(frames_arg).strip()
     if "-" in s:
         a, b = s.split("-", 1)
-        a = int(a); b = int(b)
+        a = int(a)
+        b = int(b)
         lo, hi = (a, b) if a <= b else (b, a)
         return list(range(lo, hi + 1))
     if "," in s:
         return sorted({int(x) for x in s.split(",") if x})
     return [int(s)]
 
+
 def _frame_time_seconds(scene, frame: int) -> float:
     fps = scene.render.fps / max(1, scene.render.fps_base)
     return (frame - 1) / max(1.0, float(fps))
+
 
 def _sensor_world_rotation(camera_obj) -> np.ndarray:
     """R_world_sensor: world←sensor."""
@@ -46,25 +46,30 @@ def _sensor_world_rotation(camera_obj) -> np.ndarray:
     R_cam_sensor = np.array(sensor_to_camera_rotation(), dtype=float)  # camera←sensor
     return R_cam_world @ R_cam_sensor
 
+
 def _world_from_sensor(camera_obj, dirs_sensor: np.ndarray) -> np.ndarray:
     """Rotate sensor-frame rays to world."""
     R = _sensor_world_rotation(camera_obj)  # world←sensor
     return (R @ dirs_sensor.reshape(-1, 3).T).T.reshape(dirs_sensor.shape)
 
+
 def _origins_for(camera_obj, N: int) -> np.ndarray:
     loc = np.array(camera_obj.matrix_world.translation, dtype=np.float64)
     return np.repeat(loc[None, :], N, axis=0)
 
+
 def _ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
-def _get_cam_ids(camera_obj) -> tuple[int,int]:
-    name = str(getattr(camera_obj, 'name', 'Camera'))
+
+def _get_cam_ids(camera_obj) -> tuple[int, int]:
+    name = str(getattr(camera_obj, "name", "Camera"))
     try:
-        _, rig, sub = name.split('_')
+        _, rig, sub = name.split("_")
         return int(rig), int(sub)
     except Exception:
         return (0, 0)
+
 
 def _save_camera_parameters(camera_obj, output_folder: Path, frame: int):
     scene = bpy.context.scene
@@ -86,12 +91,20 @@ def _save_camera_parameters(camera_obj, output_folder: Path, frame: int):
             # Fallback to identity intrinsics if still failing
             K = np.eye(3, dtype=np.float64)
     HW = np.array((scene.render.resolution_y, scene.render.resolution_x))
-    T = np.asarray(camera_obj.matrix_world, dtype=np.float64) @ np.diag((1.0, -1.0, -1.0, 1.0))
+    T = np.asarray(camera_obj.matrix_world, dtype=np.float64) @ np.diag(
+        (1.0, -1.0, -1.0, 1.0)
+    )
     output_folder = Path(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
     rig_id, subcam_id = _get_cam_ids(camera_obj)
     suffix = f"_{rig_id}_0_{frame}_{subcam_id}"
-    np.savez(output_folder / f"camview{suffix}.npz", K=np.asarray(K, dtype=np.float64), T=T, HW=HW)
+    np.savez(
+        output_folder / f"camview{suffix}.npz",
+        K=np.asarray(K, dtype=np.float64),
+        T=T,
+        HW=HW,
+    )
+
 
 @dataclass
 class FrameOutputs:
@@ -99,7 +112,10 @@ class FrameOutputs:
     scale_used: float
     points: int
 
-def process_frame(scene, camera_obj, cfg: LidarConfig, out_dir: Path, frame: int) -> FrameOutputs:
+
+def process_frame(
+    scene, camera_obj, cfg: LidarConfig, out_dir: Path, frame: int
+) -> FrameOutputs:
     """Emit LiDAR for a single frame and save PLY + metadata JSON lines."""
     assert bpy is not None, "Must run inside Blender"
 
@@ -111,12 +127,20 @@ def process_frame(scene, camera_obj, cfg: LidarConfig, out_dir: Path, frame: int
     # Rays in sensor frame
     rays = generate_sensor_rays(cfg)
     dirs_sensor = rays["directions"]  # (R,A,3), +X forward sensor frame
-    rings = np.repeat(np.arange(dirs_sensor.shape[0], dtype=np.int16), dirs_sensor.shape[1])
-    az = np.tile(np.linspace(-math.pi, math.pi, dirs_sensor.shape[1], endpoint=False).astype(np.float32),
-                 dirs_sensor.shape[0])
+    rings = np.repeat(
+        np.arange(dirs_sensor.shape[0], dtype=np.int16), dirs_sensor.shape[1]
+    )
+    az = np.tile(
+        np.linspace(-math.pi, math.pi, dirs_sensor.shape[1], endpoint=False).astype(
+            np.float32
+        ),
+        dirs_sensor.shape[0],
+    )
 
     # World transform
-    dirs_world = _world_from_sensor(camera_obj, dirs_sensor).reshape(-1, 3).astype(np.float64)
+    dirs_world = (
+        _world_from_sensor(camera_obj, dirs_sensor).reshape(-1, 3).astype(np.float64)
+    )
     dirs_world /= np.linalg.norm(dirs_world, axis=1, keepdims=True).clip(1e-12, None)
     origins = _origins_for(camera_obj, dirs_world.shape[0])
 
@@ -175,10 +199,19 @@ def process_frame(scene, camera_obj, cfg: LidarConfig, out_dir: Path, frame: int
     )
 
     # Per-frame metadata
-    meta = {"frame": frame, "points": int(pts_out.shape[0]), "scale_used": float(res.get("scale_used", 0.0))}
+    meta = {
+        "frame": frame,
+        "points": int(pts_out.shape[0]),
+        "scale_used": float(res.get("scale_used", 0.0)),
+    }
     (out_dir / "frame_metadata.jsonl").write_text(
-        ((out_dir / "frame_metadata.jsonl").read_text() if (out_dir / "frame_metadata.jsonl").exists() else "")
-        + json.dumps(meta) + "\n"
+        (
+            (out_dir / "frame_metadata.jsonl").read_text()
+            if (out_dir / "frame_metadata.jsonl").exists()
+            else ""
+        )
+        + json.dumps(meta)
+        + "\n"
     )
 
     # Package camera intrinsics/extrinsics in a camview folder consistent with Infinigen
@@ -193,7 +226,9 @@ def process_frame(scene, camera_obj, cfg: LidarConfig, out_dir: Path, frame: int
     # Package IMU/TUM data: symlink/copy from sibling frames/imu_tum if present
     try:
         # seed root assumed to be input scene folder parent; infer from current .blend if available
-        blend_path = Path(bpy.data.filepath) if bpy and bpy.data and bpy.data.filepath else None
+        blend_path = (
+            Path(bpy.data.filepath) if bpy and bpy.data and bpy.data.filepath else None
+        )
         seed_root = blend_path.parent if blend_path is not None else out_dir.parent
         src_imu_dir = seed_root / "frames" / "imu_tum"
         dst_imu_dir = out_dir / "imu_tum"
@@ -227,7 +262,10 @@ def process_frame(scene, camera_obj, cfg: LidarConfig, out_dir: Path, frame: int
             "sensor_to_camera_R_cs": R_cs,
             "min_range": float(getattr(cfg, "min_range", 0.05)),
             "max_range": float(getattr(cfg, "max_range", 100.0)),
-            "azimuth_steps": int(getattr(cfg, "force_azimuth_steps", 0) or getattr(cfg, "azimuth_steps", 1800)),
+            "azimuth_steps": int(
+                getattr(cfg, "force_azimuth_steps", 0)
+                or getattr(cfg, "azimuth_steps", 1800)
+            ),
             "rings": int(getattr(cfg, "rings", 16)),
         }
         with (out_dir / "lidar_calib.json").open("w") as fh:
@@ -235,11 +273,36 @@ def process_frame(scene, camera_obj, cfg: LidarConfig, out_dir: Path, frame: int
     except Exception:
         pass
 
-    return FrameOutputs(out_ply, float(res.get("scale_used", 0.0)), int(pts_out.shape[0]))
+    return FrameOutputs(
+        out_ply, float(res.get("scale_used", 0.0)), int(pts_out.shape[0])
+    )
+
 
 # ------------------------- top-level entrypoints -------------------------
 
-def run_on_current_scene(output_dir: str, frames: Sequence[int], camera_name: str, cfg_kwargs=None):
+
+def _resolve_export_textures(scene_path: str | Path) -> str | None:
+    try:
+        s = Path(scene_path)
+        scene_dir = s.parent
+        scene_name = s.name
+        candidates = [
+            scene_dir / f"export_{scene_name}" / "textures",
+            scene_dir / "export_scene.blend" / "textures",
+            scene_dir.parent / "export" / f"export_{scene_name}" / "textures",
+            scene_dir.parent / "export" / "textures",
+        ]
+        for c in candidates:
+            if c.is_dir():
+                return str(c)
+        return None
+    except Exception:
+        return None
+
+
+def run_on_current_scene(
+    output_dir: str, frames: Sequence[int], camera_name: str, cfg_kwargs=None
+):
     """Operate on the current open Blender scene."""
     assert bpy is not None, "Must run inside Blender"
     cfg_kwargs = dict(cfg_kwargs or {})
@@ -247,22 +310,24 @@ def run_on_current_scene(output_dir: str, frames: Sequence[int], camera_name: st
 
     # Require Infinigen export-baked textures; try to auto-detect if not provided
     try:
-        if getattr(cfg, "use_export_bakes", True) and not getattr(cfg, "export_bake_dir", None):
-            blend_path = Path(bpy.data.filepath) if bpy and bpy.data and bpy.data.filepath else None
+        if not getattr(cfg, "export_bake_dir", None):
+            blend_path = (
+                Path(bpy.data.filepath)
+                if bpy and bpy.data and bpy.data.filepath
+                else None
+            )
             if blend_path is not None:
-                seed_root = blend_path.parent  # fine/coarse folder
-                export_dir = seed_root / "export" / "textures"
-                if export_dir.exists():
-                    cfg.export_bake_dir = str(export_dir)
+                auto = _resolve_export_textures(blend_path)
+                if auto:
+                    cfg.export_bake_dir = auto
     except Exception:
         pass
 
-    if getattr(cfg, "use_export_bakes", True):
-        exp = getattr(cfg, "export_bake_dir", None)
-        if not exp or not Path(exp).exists():
-            raise FileNotFoundError(
-                "LiDAR requires exporter-baked PBR textures. Provide --export-bake-dir or run scripts/bake_export_textures.sh"
-            )
+    exp = getattr(cfg, "export_bake_dir", None)
+    if not exp or not Path(exp).exists():
+        raise FileNotFoundError(
+            "LiDAR requires exporter-baked PBR textures. Provide --export-bake-dir or run scripts/bake_export_textures.sh"
+        )
 
     scene = bpy.context.scene
     cam = resolve_camera(scene, camera_name)
@@ -278,7 +343,8 @@ def run_on_current_scene(output_dir: str, frames: Sequence[int], camera_name: st
     # Seed
     seed = int(cfg_kwargs.get("seed", 0)) if "seed" in cfg_kwargs else None
     if seed is not None:
-        random.seed(seed); np.random.seed(seed)
+        random.seed(seed)
+        np.random.seed(seed)
 
     for f in frames:
         fo = process_frame(scene, cam, cfg, out_dir, f)
@@ -294,57 +360,82 @@ def run_on_current_scene(output_dir: str, frames: Sequence[int], camera_name: st
         for f in frames:
             fh.write(f"{_frame_time_seconds(scene, f):.9f}\n")
 
-def generate_for_scene(scene_path: str, output_dir: str, frames: Sequence[int], camera_name="Camera", cfg_kwargs=None):
+
+def generate_for_scene(
+    scene_path: str,
+    output_dir: str,
+    frames: Sequence[int],
+    camera_name="Camera",
+    cfg_kwargs=None,
+):
     """Open a .blend and run LiDAR generation."""
     assert bpy is not None, "Must run inside Blender"
     bpy.ops.wm.open_mainfile(filepath=str(scene_path))
-    run_on_current_scene(output_dir=output_dir, frames=frames, camera_name=camera_name, cfg_kwargs=cfg_kwargs)
+    run_on_current_scene(
+        output_dir=output_dir,
+        frames=frames,
+        camera_name=camera_name,
+        cfg_kwargs=cfg_kwargs,
+    )
+
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser("Infinigen indoor LiDAR (baked-only)")
     p.add_argument("scene_path", type=str, help="Path to .blend")
-    p.add_argument("--output_dir", type=str, default="outputs/infinigen_lidar", help="Output directory")
+    p.add_argument(
+        "--output_dir",
+        type=str,
+        default="outputs/infinigen_lidar",
+        help="Output directory",
+    )
     p.add_argument("--frames", type=str, default="1", help="e.g. '1-48' or '1,5,10'")
     p.add_argument("--camera", type=str, default="Camera", help="Camera object name")
     p.add_argument("--preset", type=str, default="VLP-16", help="Sensor preset")
-    p.add_argument("--force-azimuth-steps", type=int, default=None, help="Override azimuth columns")
-    p.add_argument("--ply-frame", type=str, default="sensor", choices=["sensor", "camera", "world"], help="PLY output frame")
+    p.add_argument(
+        "--force-azimuth-steps", type=int, default=None, help="Override azimuth columns"
+    )
+    p.add_argument(
+        "--ply-frame",
+        type=str,
+        default="sensor",
+        choices=["sensor", "camera", "world"],
+        help="PLY output frame",
+    )
     p.add_argument("--ply-binary", action="store_true", help="Write binary PLY")
-    p.add_argument("--auto-expose", action="store_true", help="Enable per-frame intensity auto-exposure (8-bit)")
-    p.add_argument("--secondary", action="store_true", help="Enable single pass-through for transmissive surfaces")
+    p.add_argument(
+        "--auto-expose",
+        action="store_true",
+        help="Enable per-frame intensity auto-exposure (8-bit)",
+    )
+    p.add_argument(
+        "--secondary",
+        action="store_true",
+        help="Enable single pass-through for transmissive surfaces",
+    )
     p.add_argument("--seed", type=int, default=0)
     # Baked textures directory (required); auto-detected when present next to the scene
-    p.add_argument("--export-bake-dir", type=str, default=None, help="Folder containing exporter-baked PBR textures")
+    p.add_argument(
+        "--export-bake-dir",
+        type=str,
+        default=None,
+        help="Folder containing exporter-baked PBR textures",
+    )
     return p.parse_args(argv)
 
+
 def main(argv: Sequence[str] | None = None):
-    args = parse_args(sys.argv[sys.argv.index("--") + 1:] if argv is None and "--" in sys.argv else (argv or sys.argv[1:]))
+    args = parse_args(
+        sys.argv[sys.argv.index("--") + 1 :]
+        if argv is None and "--" in sys.argv
+        else (argv or sys.argv[1:])
+    )
 
     # Auto-detect baked textures dir if not provided. Check common exporter layouts:
     #  - <scene_dir>/export_<scene_name>/textures
     #  - <scene_dir>/export_scene.blend/textures (rare)
     #  - <scene_dir>/../export/export_<scene_name>/textures
     #  - <scene_dir>/../export/textures
-    def _auto_bake_dir(scene_path: str) -> str | None:
-        from pathlib import Path
-        try:
-            s = Path(scene_path)
-            scene_dir = s.parent
-            scene_name = s.name  # e.g., "scene.blend"
-            candidates = [
-                scene_dir / f"export_{scene_name}" / "textures",
-                scene_dir / "export_scene.blend" / "textures",
-                scene_dir.parent / "export" / f"export_{scene_name}" / "textures",
-                scene_dir.parent / "export" / "textures",
-            ]
-            for c in candidates:
-                if c.is_dir():
-                    return str(c)
-            return None
-        except Exception:
-            return None
-
-    auto_bake = args.export_bake_dir or _auto_bake_dir(args.scene_path)
+    auto_bake = args.export_bake_dir or _resolve_export_textures(args.scene_path)
 
     cfg_kwargs = dict(
         preset=args.preset,
@@ -354,8 +445,7 @@ def main(argv: Sequence[str] | None = None):
         auto_expose=bool(args.auto_expose),
         ply_binary=bool(args.ply_binary),
         prefer_ior=True,
-        # Material sampling: require exporter bakes; never bake here
-        use_export_bakes=True,
+        # Material sampling: baked-only (require exporter textures)
         export_bake_dir=auto_bake,
     )
 
@@ -367,6 +457,7 @@ def main(argv: Sequence[str] | None = None):
         camera_name=args.camera,
         cfg_kwargs=cfg_kwargs,
     )
+
 
 if __name__ == "__main__":
     main()

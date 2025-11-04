@@ -24,9 +24,9 @@ This script:
 from __future__ import annotations
 
 import os
+import runpy
 import sys
 import types
-import runpy
 
 
 def _ensure_vendor_in_path() -> None:

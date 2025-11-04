@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+
 def _filter_blender_cli(argv: list[str]) -> list[str]:
     """Remove Blender launch flags and return only pytest arguments."""
     if "--" in argv:
@@ -50,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     if "-q" not in pytest_args and "--quiet" not in pytest_args:
         pytest_args = ["-q", *pytest_args]
     import pytest
+
     return pytest.main(pytest_args)
 
 

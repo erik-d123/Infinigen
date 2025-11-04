@@ -35,12 +35,29 @@ def _stub_exr() -> None:
         sys.modules["Imath"] = types.ModuleType("Imath")
 
 
+def _ensure_textures_dir(out_dir: Path, in_dir: Path) -> None:
+    try:
+        blends = [p for p in in_dir.iterdir() if p.suffix == ".blend"]
+    except Exception:
+        blends = []
+    if not blends:
+        # Default to scene.blend naming
+        tgt = out_dir / "export_scene.blend" / "textures"
+        tgt.mkdir(parents=True, exist_ok=True)
+        return
+    for b in blends:
+        tgt = out_dir / f"export_{b.name}" / "textures"
+        tgt.mkdir(parents=True, exist_ok=True)
+
+
 def main(argv: list[str]) -> int:
     # Expect: runner.py -- <in_dir> <out_dir> <res>
     if "--" in argv:
         argv = argv[argv.index("--") + 1 :]
     if len(argv) < 3:
-        print("Usage: bake_export_runner.py -- <in_dir> <out_dir> <res>", file=sys.stderr)
+        print(
+            "Usage: bake_export_runner.py -- <in_dir> <out_dir> <res>", file=sys.stderr
+        )
         return 2
     in_dir = Path(argv[0]).resolve()
     out_dir = Path(argv[1]).resolve()
@@ -48,6 +65,21 @@ def main(argv: list[str]) -> int:
 
     _ensure_vendor()
     _stub_exr()
+    # Force safe Cycles settings (CPU) to avoid GPU-only failures in headless
+    try:
+        import bpy  # type: ignore
+
+        bpy.context.scene.render.engine = "CYCLES"
+        if hasattr(bpy.context.scene, "cycles"):
+            bpy.context.scene.cycles.device = "CPU"
+    except Exception:
+        pass
+
+    # Pre-create expected textures directories so image saves succeed
+    try:
+        _ensure_textures_dir(out_dir, in_dir)
+    except Exception:
+        pass
 
     # Build argv for exporter CLI
     sys.argv = [
@@ -69,4 +101,3 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

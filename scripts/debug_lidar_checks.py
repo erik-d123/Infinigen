@@ -16,8 +16,6 @@ from pathlib import Path
 
 import bpy
 import numpy as np
-from mathutils import Vector
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -209,7 +207,9 @@ def test_incidence_angle():
     return {
         "hits_normal": nhit_normal,
         "hits_tilt": nhit_tilt,
-        "mean_reflectance_normal": float(np.mean(refl_normal)) if refl_normal.size else 0.0,
+        "mean_reflectance_normal": float(np.mean(refl_normal))
+        if refl_normal.size
+        else 0.0,
         "mean_reflectance_tilt": float(np.mean(refl_tilt)) if refl_tilt.size else 0.0,
     }
 
@@ -341,9 +341,13 @@ def main():
     sample_blend = next(REPO_ROOT.glob("outputs/**/*.blend"), None)
     if sample_blend:
         indoor_res = test_indoor_material(sample_blend)
-        results.append(("Indoor material sample", {"blend": str(sample_blend), **indoor_res}))
+        results.append(
+            ("Indoor material sample", {"blend": str(sample_blend), **indoor_res})
+        )
     else:
-        results.append(("Indoor material sample", {"error": "No .blend found under outputs/"}))
+        results.append(
+            ("Indoor material sample", {"error": "No .blend found under outputs/"})
+        )
 
     angle_res = test_incidence_angle()
     results.append(("Incidence vs reflectance", angle_res))

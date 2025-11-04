@@ -3,19 +3,17 @@ Shared helpers to compute barycentric UVs for a hit on a mesh polygon.
 """
 
 from __future__ import annotations
+
 from typing import Optional, Tuple
 
+import bpy  # noqa: F401
 import numpy as np
-
-try:
-    import bpy  # noqa: F401
-    from mathutils import Vector  # type: ignore
-except Exception:  # pragma: no cover
-    bpy = None
-    Vector = None  # type: ignore
+from mathutils import Vector  # type: ignore
 
 
-def compute_barycentric(p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray) -> Tuple[float, float, float]:
+def compute_barycentric(
+    p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray
+) -> Tuple[float, float, float]:
     v0 = b - a
     v1 = c - a
     v2 = p - a
@@ -34,8 +32,6 @@ def compute_barycentric(p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarr
 
 
 def hit_uv(eval_obj, mesh, poly_index: int, hit_world) -> Optional[Tuple[float, float]]:
-    if bpy is None or Vector is None:
-        return None
     uv_layer = getattr(mesh.uv_layers, "active", None)
     if uv_layer is None:
         return None
@@ -64,4 +60,3 @@ def hit_uv(eval_obj, mesh, poly_index: int, hit_world) -> Optional[Tuple[float, 
         uv = u * uv0 + v * uv1 + w * uv2
         return (float(uv[0]), float(uv[1]))
     return None
-

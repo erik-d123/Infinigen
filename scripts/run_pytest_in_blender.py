@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import sys
 
+
 def _extend_sys_path_from_env():
     """Append any site-packages passed in via environment variables."""
     env_keys = (
@@ -21,11 +22,14 @@ def _extend_sys_path_from_env():
             if path and path not in sys.path:
                 sys.path.append(path)
 
+
 _extend_sys_path_from_env()
 
 try:
     import pytest
-except ImportError as exc:  # pragma: no cover - blender python should have pytest from dev install
+except (
+    ImportError
+) as exc:  # pragma: no cover - blender python should have pytest from dev install
     raise RuntimeError("pytest is required to run Blender-based tests") from exc
 
 
