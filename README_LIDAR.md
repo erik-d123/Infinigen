@@ -17,8 +17,8 @@ Indoor LiDAR ground truth for Infinigen scenes. This implementation is intention
 ## Materials & Baked Inputs
 - Baked‑only semantics. No node‑graph evaluation at runtime; no runtime baking.
 - Per‑hit inputs read from exporter textures: Base Color (RGB), Roughness (R), Metallic (R), Transmission (R).
-- Alpha (coverage) source: Principled “Alpha” (if unlinked). Default opacity used when Alpha is unset. (Optional: add an “ALPHA” bake if you want per‑pixel coverage.)
-- Incidence normal: geometric (smoothed) normal at the hit in the minimal mode.
+- Alpha (coverage) source: Principled “Alpha” (if unlinked). Default opacity used when Alpha is unset. (can add an “ALPHA” bake if you want per‑pixel coverage.)
+- Incidence normal: geometric (smoothed) normal at the hit in the minimal mode. (can add using normal bake (shading normal?))
 - Bake locations: typically `export/export_scene.blend/textures/{object}_{DIFFUSE|ROUGHNESS|METAL|TRANSMISSION}.png` next to the scene.
 
 ## Alpha Semantics

@@ -1,6 +1,6 @@
 # Copyright (C) 2024, Princeton University.
 # This source code is licensed under the BSD 3-Clause license found in the LICENSE file in the root directory of this source tree.
-# PLY writer and frame-transform helpers for indoor LiDAR
+# PLY writer and frame‑transform helpers for indoor LiDAR
 
 from __future__ import annotations
 
@@ -17,9 +17,10 @@ except Exception:
 
 
 def world_to_frame_matrix(camera_obj, frame: str = "sensor") -> np.ndarray:
-    """
-    Return 4x4 transform 'world -> frame' for {world|camera|sensor}.
-    Sensor frame: +X forward, +Y left, +Z up. Blender camera: +X right, +Y up, -Z forward.
+    """Return 4x4 transform world→{world|camera|sensor} for PLY export.
+
+    Sensor frame is defined as +X forward, +Y left, +Z up. Blender camera uses
+    +X right, +Y up, -Z forward.
     """
     if frame == "world":
         return np.eye(4, dtype=float)
@@ -77,6 +78,7 @@ _OPT_FIELDS = [
 
 
 def _coerce_col(data: Dict, key: str, dtype: str, N: int) -> Optional[np.ndarray]:
+    """Fetch and coerce a 1D column from `data` if present and sized for N."""
     if key not in data:
         return None
     arr = np.asarray(data[key])
@@ -86,6 +88,7 @@ def _coerce_col(data: Dict, key: str, dtype: str, N: int) -> Optional[np.ndarray
 
 
 def _coerce_points(pts) -> np.ndarray:
+    """Validate and coerce a (N, 3) points array."""
     P = np.asarray(pts)
     if P.ndim != 2 or P.shape[1] != 3:
         raise ValueError(f"points must be (N,3), got {P.shape}")
@@ -93,6 +96,7 @@ def _coerce_points(pts) -> np.ndarray:
 
 
 def _detect_normals(data: Dict, N: int) -> Optional[np.ndarray]:
+    """Detect normals as an (N, 3) array, supporting both packed and split forms."""
     if "normals" in data:
         n = np.asarray(data["normals"])
         if n.ndim != 2 or n.shape != (N, 3):
@@ -114,6 +118,7 @@ def _detect_normals(data: Dict, N: int) -> Optional[np.ndarray]:
 def _build_header(
     N: int, have: Dict[str, bool], have_normals: bool, binary: bool
 ) -> str:
+    """Build a PLY header string for the present columns and format."""
     fmt = "binary_little_endian 1.0" if binary else "ascii 1.0"
     lines = [
         "ply",
@@ -152,6 +157,7 @@ def _build_header(
 def _stack_record_array(
     data: Dict,
 ) -> Tuple[np.ndarray, Dict[str, bool], Optional[np.ndarray]]:
+    """Column‑stack core and optional attributes into a dense array for writing."""
     P = _coerce_points(data["points"])
     N = P.shape[0]
 
@@ -192,12 +198,11 @@ def _stack_record_array(
 def save_ply(
     path: str | Path, data: Dict[str, np.ndarray], binary: bool = False
 ) -> None:
-    """
-    Write a PLY with fields described by the LiDAR pipeline.
-    Required: data['points'] (N,3)
-    Optional: intensity(u1), ring(u2), azimuth(f4), elevation(f4), return_id(u1), num_returns(u1),
-              range_m(f4), cos_incidence(f4), mat_class(u1), reflectivity(f4), transmittance(f4),
-              normals (N,3) or nx/ny/nz (f4).
+    """Write a PLY with the fields produced by the LiDAR pipeline.
+
+    Required: points (N,3). Optional fields include intensity, ring, azimuth,
+    elevation, return_id, num_returns, range_m, cos_incidence, mat_class,
+    reflectivity, transmittance, and normals (packed or split).
     """
     path = Path(path)
     if "points" not in data:

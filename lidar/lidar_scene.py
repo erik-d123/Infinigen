@@ -1,6 +1,6 @@
 # Copyright (C) 2024, Princeton University.
 # This source code is licensed under the BSD 3-Clause license found in the LICENSE file in the root directory of this source tree.
-# Scene helpers: camera resolution and sensor<->camera frame mapping
+# Scene helpers: camera resolution and sensor↔camera frame mapping
 
 from __future__ import annotations
 

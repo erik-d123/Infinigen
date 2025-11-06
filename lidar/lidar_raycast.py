@@ -1,6 +1,6 @@
 # Copyright (C) 2024, Princeton University.
 # This source code is licensed under the BSD 3-Clause license found in the LICENSE file in the root directory of this source tree.
-# Indoor LiDAR raycasting loop with alpha-at-output and optional secondary
+# Indoor LiDAR raycasting loop with alpha semantics and optional secondary
 
 from __future__ import annotations
 
@@ -21,16 +21,18 @@ from lidar.intensity_model import (
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
+    """Return a unit vector (no-op for zero length)."""
     n = float(np.linalg.norm(v))
     return v / n if n > 0 else v
 
 
 def _clip01(x: np.ndarray) -> np.ndarray:
+    """Clamp array values to [0, 1]."""
     return np.clip(x, 0.0, 1.0)
 
 
 def _percentile_scale(raw_pos: np.ndarray, pct: float, target_u8: float) -> float:
-    # Map the pct-th percentile of positive raw to target_u8/255
+    """Scale such that the pct‑th percentile maps to target_u8/255."""
     p = float(np.percentile(raw_pos, pct))
     if p <= 1e-12:
         return 0.0
@@ -38,7 +40,11 @@ def _percentile_scale(raw_pos: np.ndarray, pct: float, target_u8: float) -> floa
 
 
 def _compute_cos_i(normal: np.ndarray, ray_dir: np.ndarray) -> float:
-    # ray_dir points from origin into scene. Incidence uses negative ray_dir.
+    """Cosine of incidence given a geometric normal and ray direction.
+
+    The ray_dir points from sensor origin into the scene; incidence uses
+    the negative ray direction.
+    """
     return float(max(0.0, min(1.0, -np.dot(_unit(ray_dir), _unit(normal)))))
 
 
@@ -134,7 +140,7 @@ def perform_raycasting(
     pts, inten_raw, refl_f, rings_out, az_out, elev_out = [], [], [], [], [], []
     ret_id, num_ret, ranges, cos_i_list, mat_cls, trans_list = [], [], [], [], [], []
 
-    # Helper: try a secondary pass-through and return a dict or None
+    # Helper: try a secondary pass‑through and return a dict or None
     def _secondary_hit(loc, nrm, d, r, rings_i, az_i):
         o2 = loc + nrm * max(1e-5, sec_bias)
         d2 = d

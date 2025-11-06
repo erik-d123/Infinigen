@@ -1,3 +1,11 @@
+"""Top‑level CLI and orchestration for indoor LiDAR generation.
+
+Opens a scene (or uses the current one), generates sensor rays from presets,
+casts them against the evaluated depsgraph, computes radiometry using the
+compact intensity model, and saves per‑frame PLY and camview outputs. Material
+inputs are sampled from exporter‑baked PBR textures when provided.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -22,7 +30,7 @@ from lidar.lidar_scene import resolve_camera, sensor_to_camera_rotation
 
 
 def _parse_frames(frames_arg: str) -> List[int]:
-    """Accept '1-48', '1,5,10', or single '12'."""
+    """Parse frame selectors like "1-48", "1,5,10", or a single "12"."""
     s = str(frames_arg).strip()
     if "-" in s:
         a, b = s.split("-", 1)
@@ -36,33 +44,37 @@ def _parse_frames(frames_arg: str) -> List[int]:
 
 
 def _frame_time_seconds(scene, frame: int) -> float:
+    """Compute a monotonic timestamp (s) for a frame index from scene FPS."""
     fps = scene.render.fps / max(1, scene.render.fps_base)
     return (frame - 1) / max(1.0, float(fps))
 
 
 def _sensor_world_rotation(camera_obj) -> np.ndarray:
-    """R_world_sensor: world←sensor."""
+    """Return rotation R_world_sensor given the active camera pose."""
     R_cam_world = np.array(camera_obj.matrix_world.to_3x3(), dtype=float)
     R_cam_sensor = np.array(sensor_to_camera_rotation(), dtype=float)  # camera←sensor
     return R_cam_world @ R_cam_sensor
 
 
 def _world_from_sensor(camera_obj, dirs_sensor: np.ndarray) -> np.ndarray:
-    """Rotate sensor-frame rays to world."""
+    """Rotate sensor‑frame directions into world space."""
     R = _sensor_world_rotation(camera_obj)  # world←sensor
     return (R @ dirs_sensor.reshape(-1, 3).T).T.reshape(dirs_sensor.shape)
 
 
 def _origins_for(camera_obj, N: int) -> np.ndarray:
+    """Replicate camera origin N times for per‑ray origins."""
     loc = np.array(camera_obj.matrix_world.translation, dtype=np.float64)
     return np.repeat(loc[None, :], N, axis=0)
 
 
 def _ensure_dir(p: Path):
+    """Create a directory path if missing."""
     p.mkdir(parents=True, exist_ok=True)
 
 
 def _get_cam_ids(camera_obj) -> tuple[int, int]:
+    """Derive (rig_id, subcam_id) from the camera name, defaulting to (0,0)."""
     name = str(getattr(camera_obj, "name", "Camera"))
     try:
         _, rig, sub = name.split("_")
@@ -72,6 +84,7 @@ def _get_cam_ids(camera_obj) -> tuple[int, int]:
 
 
 def _save_camera_parameters(camera_obj, output_folder: Path, frame: int):
+    """Write camview intrinsics/extrinsics for a specific frame."""
     scene = bpy.context.scene
     if frame is not None:
         scene.frame_set(frame)
@@ -108,6 +121,8 @@ def _save_camera_parameters(camera_obj, output_folder: Path, frame: int):
 
 @dataclass
 class FrameOutputs:
+    """Simple container for per‑frame outputs."""
+
     ply_path: Path
     scale_used: float
     points: int
@@ -116,7 +131,12 @@ class FrameOutputs:
 def process_frame(
     scene, camera_obj, cfg: LidarConfig, out_dir: Path, frame: int
 ) -> FrameOutputs:
-    """Emit LiDAR for a single frame and save PLY + metadata JSON lines."""
+    """Emit LiDAR for a single frame and save PLY + metadata.
+
+    The evaluated depsgraph is used for ray casting. Alpha semantics are applied
+    once in the raycaster. PLY coordinates can be written in sensor, camera, or
+    world frames as configured.
+    """
     assert bpy is not None, "Must run inside Blender"
 
     # Set frame and update depsgraph
@@ -303,7 +323,7 @@ def _resolve_export_textures(scene_path: str | Path) -> str | None:
 def run_on_current_scene(
     output_dir: str, frames: Sequence[int], camera_name: str, cfg_kwargs=None
 ):
-    """Operate on the current open Blender scene."""
+    """Operate on the current open Blender scene without reopening a file."""
     assert bpy is not None, "Must run inside Blender"
     cfg_kwargs = dict(cfg_kwargs or {})
     cfg = LidarConfig(**cfg_kwargs)
@@ -368,7 +388,7 @@ def generate_for_scene(
     camera_name="Camera",
     cfg_kwargs=None,
 ):
-    """Open a .blend and run LiDAR generation."""
+    """Open a .blend by path and run LiDAR generation."""
     assert bpy is not None, "Must run inside Blender"
     bpy.ops.wm.open_mainfile(filepath=str(scene_path))
     run_on_current_scene(
@@ -380,6 +400,7 @@ def generate_for_scene(
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    """CLI parser for standalone LiDAR generation inside Blender."""
     p = argparse.ArgumentParser("Infinigen indoor LiDAR (baked-only)")
     p.add_argument("scene_path", type=str, help="Path to .blend")
     p.add_argument(
@@ -424,6 +445,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None):
+    """CLI entry for LiDAR generation when run under Blender."""
     args = parse_args(
         sys.argv[sys.argv.index("--") + 1 :]
         if argv is None and "--" in sys.argv

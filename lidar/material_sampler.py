@@ -1,5 +1,8 @@
-"""
-MaterialSampler: caches baked PBR maps per (object, material) and provides fast per-hit sampling.
+"""Sampling baked PBR maps (per object/material) at hit UVs.
+
+This module provides a tiny cache around exporter‑baked texture PNGs and
+exposes `MaterialSampler.sample_properties` to read Base Color, Roughness,
+Metallic, and Transmission at an exact surface hit in object UV space.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ from lidar.mesh_uv import hit_uv as _hit_uv  # reuse
 
 
 def _sample_px_bilinear(px: np.ndarray, uv: Tuple[float, float]) -> np.ndarray:
-    """Bilinear sample RGBA at uv in [0,1)."""
+    """Bilinear sample RGBA at UV in [0, 1)."""
     h, w, _ = px.shape
     if w <= 0 or h <= 0:
         return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
@@ -55,6 +58,7 @@ class MaterialSampler:
 
     @classmethod
     def get(cls) -> "MaterialSampler":
+        """Return the process‑global sampler instance (lazy‑initialized)."""
         if cls._inst is None:
             cls._inst = MaterialSampler()
         return cls._inst
@@ -63,6 +67,10 @@ class MaterialSampler:
         return name.replace(" ", "_").replace(".", "_")
 
     def _load_png(self, path: str) -> Optional[np.ndarray]:
+        """Load a PNG via Blender and return it as an HxWx4 float array.
+
+        The Blender image is removed after reading to avoid accumulation.
+        """
         if bpy is None or not os.path.isfile(path):
             return None
         try:
@@ -81,6 +89,7 @@ class MaterialSampler:
     def _load_export_bakes(
         self, obj, export_bake_dir: Optional[str]
     ) -> Dict[str, np.ndarray]:
+        """Load all known bake maps for an object from a textures directory."""
         if export_bake_dir is None:
             return {}
         base = self._clean_name(obj.name)
@@ -100,6 +109,11 @@ class MaterialSampler:
         hit_world,
         export_bake_dir: Optional[str] = None,
     ) -> Optional[Dict]:
+        """Sample baked material properties at a world‑space hit location.
+
+        Returns a dict subset of {base_color, roughness, metallic, transmission}
+        when successful, otherwise None.
+        """
         eval_obj = obj.evaluated_get(depsgraph)
         mesh = eval_obj.to_mesh()
         try:

@@ -1,3 +1,17 @@
+"""Material sampling and compact reflectance model for indoor LiDAR.
+
+This module extracts a minimal set of Principled BSDF parameters (preferring
+exporter‑baked textures when available) and computes a compact radiometric
+response suitable for LiDAR:
+
+- Fresnel via Schlick, metallic mixing, roughness shaping
+- Lambertian diffuse without 1/pi (indoor, compact)
+- Transmission term and a residual for an optional pass‑through return
+- Alpha semantics are applied by the caller (raycaster) exactly once
+
+No node graphs are evaluated at runtime; sampling is baked‑only.
+"""
+
 from __future__ import annotations
 
 from typing import Dict, Optional, Tuple
@@ -16,19 +30,27 @@ except Exception:
 
 # Lazy import to avoid heavy imports when running pure unit tests
 def _get_default_opacity(cfg) -> float:
+    """Return default opacity fallback from config or module constant.
+
+    Used only when Principled Alpha is effectively unset (not linked and at
+    default). The raycaster applies the resulting coverage once.
+    """
     return float(getattr(cfg, "default_opacity", _CFG_DEFAULT_OPACITY))
 
 
 def _saturate(x: float) -> float:
+    """Clamp a scalar to [0, 1]."""
     return max(0.0, min(1.0, float(x)))
 
 
 def _luma(rgb: Tuple[float, float, float]) -> float:
+    """Compute perceptual luma from RGB in [0,1]."""
     r, g, b = rgb
     return max(0.0, min(1.0, 0.2126 * r + 0.7152 * g + 0.0722 * b))
 
 
 def F_schlick(cos_theta: float, F0: float) -> float:
+    """Schlick Fresnel approximation for a scalar base reflectance F0."""
     cos_theta = max(0.0, min(1.0, float(cos_theta)))
     F0 = max(0.0, min(1.0, float(F0)))
     x = 1.0 - cos_theta
@@ -38,6 +60,7 @@ def F_schlick(cos_theta: float, F0: float) -> float:
 def F_schlick_rgb(
     cos_theta: float, F0_rgb: Tuple[float, float, float]
 ) -> Tuple[float, float, float]:
+    """Schlick Fresnel applied per‑channel for RGB F0."""
     cos_theta = max(0.0, min(1.0, float(cos_theta)))
     k = (1.0 - cos_theta) ** 5
     return tuple(
@@ -47,13 +70,14 @@ def F_schlick_rgb(
 
 
 def transmissive_reflectance(cos_i: float, ior: float) -> float:
-    """Fresnel reflectance for a dielectric at the interface (Schlick)."""
+    """Fresnel reflectance for a dielectric (Schlick form)."""
     ior = float(ior if ior else 1.45)
     f0 = ((ior - 1.0) / (ior + 1.0)) ** 2
     return F_schlick(max(0.0, float(cos_i)), f0)
 
 
 def _find_principled_bsdf(mat) -> Optional["bpy.types.Node"]:
+    """Locate the Principled BSDF node feeding the material output if present."""
     if not (mat and getattr(mat, "use_nodes", False) and mat.node_tree):
         return None
     nt = mat.node_tree
@@ -77,6 +101,7 @@ def _find_principled_bsdf(mat) -> Optional["bpy.types.Node"]:
 
 
 def _get_input_default(bsdf, names, default):
+    """Read an unlinked scalar input from a Principled node or return default."""
     for n in names:
         sock = bsdf.inputs.get(n)
         if sock is not None and not sock.is_linked:
@@ -88,6 +113,7 @@ def _get_input_default(bsdf, names, default):
 
 
 def _get_color_default(bsdf, name="Base Color", default=(0.8, 0.8, 0.8)):
+    """Read an unlinked color input (RGB) from a Principled node or default."""
     sock = bsdf.inputs.get(name)
     if sock is not None and not sock.is_linked:
         try:
@@ -101,12 +127,15 @@ def _get_color_default(bsdf, name="Base Color", default=(0.8, 0.8, 0.8)):
 def extract_material_properties(
     obj, poly_index, depsgraph, hit_world=None, cfg=None
 ) -> Dict:
-    """
-    Read Principled BSDF inputs needed by the intensity model.
+    """Extract minimal Principled inputs for the LiDAR intensity model.
 
-    Returns keys:
-      base_color (rgb), metallic, specular, roughness, transmission, ior,
-      transmission_roughness, opacity, diffuse_scale, specular_scale, is_glass_hint
+    Preference order for inputs:
+    1) Exporter‑baked textures sampled at the hit UV (if provided)
+    2) Unlinked Principled inputs (defaults) from the material
+
+    Returns a dict including keys like base_color, metallic, specular, roughness,
+    transmission, ior, transmission_roughness, optional opacity (coverage), and
+    flags for alpha semantics.
     """
     props = dict(
         base_color=(0.8, 0.8, 0.8),
@@ -240,13 +269,14 @@ def extract_material_properties(
 
 
 def compute_intensity(props: Dict, cos_i: float, R: float, cfg):
-    """
-    Returns:
-        intensity (float): range-attenuated return power (pre-alpha).
-        secondary_scale (float): residual for pass-through (0..1).
-        reflectivity (float): material reflectivity (pre-alpha).
-        transmittance (float): (0..1).
-        alpha_cov (float): coverage factor to be applied by caller.
+    """Compact LiDAR radiometry from material properties and incidence.
+
+    Returns a tuple of:
+    - intensity: range‑attenuated return power (pre‑alpha)
+    - secondary_scale: residual energy for pass‑through (0..1)
+    - reflectivity: material reflectivity (pre‑alpha)
+    - transmittance: material transmission in [0,1]
+    - alpha_cov: coverage factor; caller applies CLIP/BLEND semantics
     """
     # Config
     dist_p = float(getattr(cfg, "distance_power", 2.0))
@@ -324,7 +354,7 @@ def compute_intensity(props: Dict, cos_i: float, R: float, cfg):
 
 
 def classify_material(props: Dict) -> int:
-    """0: opaque/dielectric, 1: glass-like, 2: metal."""
+    """Return a coarse material class: 0=dielectric, 1=glass‑like, 2=metal."""
     m = float(props.get("metallic", 0.0) or 0.0)
     t = float(props.get("transmission", 0.0) or 0.0)
     op = float(

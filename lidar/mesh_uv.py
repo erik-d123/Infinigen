@@ -1,6 +1,4 @@
-"""
-Shared helpers to compute barycentric UVs for a hit on a mesh polygon.
-"""
+"""Helpers to compute barycentric UVs for a world‑space hit on a mesh polygon."""
 
 from __future__ import annotations
 
@@ -14,6 +12,7 @@ from mathutils import Vector  # type: ignore
 def compute_barycentric(
     p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray
 ) -> Tuple[float, float, float]:
+    """Return barycentric coordinates of point p in triangle (a, b, c)."""
     v0 = b - a
     v1 = c - a
     v2 = p - a
@@ -32,6 +31,10 @@ def compute_barycentric(
 
 
 def hit_uv(eval_obj, mesh, poly_index: int, hit_world) -> Optional[Tuple[float, float]]:
+    """Compute active UV at a world‑space hit on a specific polygon.
+
+    Returns (u, v) in [0, 1] if successful, otherwise None.
+    """
     uv_layer = getattr(mesh.uv_layers, "active", None)
     if uv_layer is None:
         return None

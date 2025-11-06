@@ -1,3 +1,9 @@
+"""Configuration and sensor presets for indoor LiDAR generation.
+
+Provides a small dataclass `LidarConfig` with sensible defaults for indoor
+scenes, plus a few named presets for common sensors (ring counts, ranges).
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -17,6 +23,12 @@ LIDAR_PRESETS: Dict[str, Dict[str, float]] = {
 
 @dataclass
 class LidarConfig:
+    """Runtime configuration for LiDAR generation and raycasting.
+
+    Fields cover sampling resolution, radiometry and exposure, secondary return
+    behavior, coordinate frame for PLY export, and baked material sampling.
+    """
+
     # High-level
     preset: str = "VLP-16"
     force_azimuth_steps: Optional[int] = None  # overrides azimuth columns if set
@@ -72,10 +84,11 @@ class LidarConfig:
         self.azimuth_steps = int(max(8, self.azimuth_steps))
 
     def hit_offset(self) -> float:
-        # Backward-compatible alias used by raycaster
+        """Backward‑compatible alias used by the raycaster."""
         return self.secondary_ray_bias
 
     def to_dict(self) -> Dict[str, Any]:
+        """Convert to a JSON‑serializable dict (excluding extras)."""
         d = asdict(self)
         # keep a clean surface in saved JSON
         d.pop("extras", None)
@@ -83,7 +96,7 @@ class LidarConfig:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "LidarConfig":
-        # Allow unknown keys via extras
+        """Create from a dict, storing unknown keys under `extras`."""
         known = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
         extras = {k: v for k, v in d.items() if k not in cls.__dataclass_fields__}
         cfg = cls(**known)

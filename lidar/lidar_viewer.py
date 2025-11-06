@@ -1,3 +1,10 @@
+"""Lightweight viewer for LiDAR PLY outputs.
+
+Loads point clouds with optional attributes and displays them in Open3D with
+simple color modes (intensity, reflectivity, ring). Includes a tolerant ASCII
+PLY reader for environments without `plyfile`.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -18,6 +25,7 @@ except Exception:
 
 
 def _list_frames(out_dir: Path) -> List[Path]:
+    """Return sorted PLY paths in a directory, raising if empty."""
     files = sorted(out_dir.glob("lidar_frame_*.ply"))
     if not files:
         raise FileNotFoundError(f"No PLYs found in {out_dir}")
@@ -25,7 +33,10 @@ def _list_frames(out_dir: Path) -> List[Path]:
 
 
 def _read_ply_ascii_tolerant(path: Path) -> dict:
-    """Fallback ASCII PLY reader that coerces ints written as floats (e.g., '0.0' -> 0)."""
+    """Fallback ASCII PLY reader.
+
+    Coerces integer fields that may appear as float literals (e.g. "0.0" → 0).
+    """
 
     cols = {}
     props = []
@@ -106,7 +117,7 @@ def _read_ply_ascii_tolerant(path: Path) -> dict:
 
 
 def _read_ply_all(path: Path) -> Dict[str, np.ndarray]:
-    """Read xyz and optional attributes. Prefer plyfile; fallback to Open3D."""
+    """Read xyz and optional attributes; prefer plyfile, fallback to Open3D."""
     data: Dict[str, np.ndarray] = {}
     if PlyData is not None:
         try:
@@ -160,6 +171,7 @@ def _read_ply_all(path: Path) -> Dict[str, np.ndarray]:
 
 
 def _color_from_intensity_u8(intensity: np.ndarray, N: int) -> np.ndarray:
+    """Compute grayscale colors from 8‑bit intensity with robust scaling."""
     if intensity is None or intensity.size != N:
         return np.zeros((N, 3), dtype="f4")
     a = intensity.astype(np.float32)
@@ -173,6 +185,7 @@ def _color_from_intensity_u8(intensity: np.ndarray, N: int) -> np.ndarray:
 
 
 def _color_from_reflectivity(refl: np.ndarray, N: int) -> np.ndarray:
+    """Compute grayscale colors from [0,1] reflectivity."""
     if refl is None or refl.size != N:
         return np.zeros((N, 3), dtype="f4")
     g = np.asarray(refl, dtype=np.float32).clip(0.0, 1.0)
@@ -180,7 +193,7 @@ def _color_from_reflectivity(refl: np.ndarray, N: int) -> np.ndarray:
 
 
 def _tab20(n: int) -> np.ndarray:
-    # Simple repeating palette
+    """A small repeating qualitative palette (TAB20‑like)."""
     base = (
         np.array(
             [
@@ -213,6 +226,7 @@ def _tab20(n: int) -> np.ndarray:
 
 
 def _color_from_ring(ring: np.ndarray, N: int) -> np.ndarray:
+    """Colorize points by ring index using a repeating palette."""
     if ring is None or ring.size != N:
         return np.zeros((N, 3), dtype="f4")
     r = ring.astype(np.int64)
@@ -224,6 +238,7 @@ def _color_from_ring(ring: np.ndarray, N: int) -> np.ndarray:
 
 
 def _intensity_to_heat(intensity: np.ndarray, N: int) -> np.ndarray:
+    """Pseudo‑color intensity to a simple JET‑like heatmap."""
     if intensity is None or intensity.size != N:
         return np.zeros((N, 3), dtype="f4")
     a = intensity.astype(np.float32)
@@ -254,6 +269,7 @@ def _intensity_to_heat(intensity: np.ndarray, N: int) -> np.ndarray:
 def _make_o3d_pcd(
     points: np.ndarray, colors: np.ndarray, normals: Optional[np.ndarray] = None
 ):
+    """Create an Open3D point cloud with optional normals."""
     assert o3d is not None, "open3d is required for visualization"
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points.astype(np.float64))
@@ -264,6 +280,7 @@ def _make_o3d_pcd(
 
 
 def _apply_color_mode(data: Dict[str, np.ndarray], mode: str) -> np.ndarray:
+    """Select a color mapping for the viewer from available fields."""
     pts = data["points"]
     N = pts.shape[0]
     if mode == "reflectivity" and "reflectivity" in data:
@@ -278,6 +295,7 @@ def _apply_color_mode(data: Dict[str, np.ndarray], mode: str) -> np.ndarray:
 def _load_frame(
     path: Path, mode: str
 ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Dict[str, np.ndarray]]:
+    """Load a single frame, returning (points, colors, normals, aux)."""
     data = _read_ply_all(path)
     pts = data["points"]
     cols = _apply_color_mode(data, mode)
@@ -286,11 +304,13 @@ def _load_frame(
 
 
 def _title(dir_path: Path, files: List[Path], idx: int, mode: str) -> str:
+    """Format a window title for the current frame and color mode."""
     name = files[idx].name
     return f"{dir_path.name}  |  {name}  |  color: {mode}"
 
 
 def view_dir(out_dir: str, color: str = "intensity", frame: Optional[int] = None):
+    """Open an interactive viewer for a directory of LiDAR frames."""
     assert o3d is not None, "open3d is required for visualization"
     outp = Path(out_dir)
     files = _list_frames(outp)
@@ -359,6 +379,7 @@ def view_dir(out_dir: str, color: str = "intensity", frame: Optional[int] = None
 
 
 def parse_args(argv=None):
+    """CLI parser for the LiDAR viewer."""
     ap = argparse.ArgumentParser("Infinigen indoor LiDAR viewer")
     ap.add_argument("output_dir", type=str, help="Directory with lidar_frame_*.ply")
     ap.add_argument(
@@ -372,6 +393,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None):
+    """Entry point for the LiDAR viewer."""
     args = parse_args(argv)
     view_dir(args.output_dir, color=args.color, frame=args.frame)
 
