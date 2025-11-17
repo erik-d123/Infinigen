@@ -4,6 +4,7 @@
 
 
 import argparse
+import json
 import logging
 import math
 import shutil
@@ -19,6 +20,62 @@ import numpy as np
 import trimesh
 
 from infinigen.core.util import blender as butil
+
+
+def _clean_name(name: str) -> str:
+    return name.replace(" ", "_").replace(".", "_")
+
+
+def _find_principled_bsdf(mat):
+    try:
+        if not (mat and getattr(mat, "use_nodes", False) and mat.node_tree):
+            return None
+        for node in mat.node_tree.nodes:
+            if getattr(node, "type", "") == "BSDF_PRINCIPLED":
+                return node
+    except Exception:
+        return None
+    return None
+
+
+def _write_material_sidecar(tex_dir: Path, obj_name: str, mat) -> None:
+    if mat is None:
+        return
+    data = {
+        "alpha_mode": str(getattr(mat, "blend_method", "BLEND")).upper(),
+        "alpha_clip": float(getattr(mat, "alpha_threshold", 0.5) or 0.5),
+        "transmission_roughness": 0.0,
+    }
+    bsdf = _find_principled_bsdf(mat)
+    if bsdf is not None:
+        try:
+            data["ior"] = float(bsdf.inputs.get("IOR").default_value)
+        except Exception:
+            try:
+                data["specular"] = float(bsdf.inputs.get("Specular").default_value)
+            except Exception:
+                pass
+        try:
+            tr = bsdf.inputs.get("Transmission Roughness")
+            if tr is not None:
+                data["transmission_roughness"] = float(tr.default_value)
+        except Exception:
+            pass
+    if "ior" not in data and "specular" not in data:
+        data["specular"] = 0.5
+
+    tex_dir.mkdir(parents=True, exist_ok=True)
+    obj_clean = _clean_name(obj_name)
+    mat_clean = _clean_name(getattr(mat, "name", "Material"))
+    sidecar_path = tex_dir / f"{obj_clean}_{mat_clean}.json"
+    try:
+        with sidecar_path.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+    except Exception:
+        logging.warning(
+            f"Failed to write sidecar for {obj_name}:{mat_clean} -> {sidecar_path}"
+        )
+
 
 FORMAT_CHOICES = ["fbx", "obj", "usdc", "usda", "stl", "ply"]
 BAKE_TYPES = {
@@ -744,6 +801,7 @@ def deep_copy_material(original_material, new_name_suffix="_deepcopy"):
 
 
 def bake_object(obj, dest, img_size, export_usd, export_name=None):
+    tex_dir = Path(dest)
     if not uv_unwrap(obj):
         return
 
@@ -768,6 +826,8 @@ def bake_object(obj, dest, img_size, export_usd, export_name=None):
             bake_pass(obj, dest, img_size, bake_type, export_usd, export_name)
 
         apply_baked_tex(obj, paramDict)
+        for slot in obj.material_slots:
+            _write_material_sidecar(tex_dir, obj.name, slot.material)
 
 
 def bake_scene(folderPath: Path, image_res, vertex_colors, export_usd):

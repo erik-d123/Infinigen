@@ -1,12 +1,26 @@
 """Sampling baked PBR maps (per object/material) at hit UVs.
 
-This module provides a tiny cache around exporter‑baked texture PNGs and
-exposes `MaterialSampler.sample_properties` to read Base Color, Roughness,
-Metallic, and Transmission at an exact surface hit in object UV space.
+Strict baked-only mode:
+ - Per-hit signals come only from exporter-baked textures (no node evaluation).
+ - Per-material metadata comes only from sidecar JSONs placed next to bakes.
+
+Baked textures used:
+ - DIFFUSE (RGB[A])  → base_color, coverage (A channel)
+ - ROUGHNESS (R)
+ - METAL (R)
+ - TRANSMISSION (R)
+ - Optional COVERAGE (R) overrides DIFFUSE alpha if present
+
+Sidecar JSON per (object, material):
+ - alpha_mode: "CLIP" | "BLEND" | "HASHED"
+ - alpha_clip: float
+ - ior (preferred) or specular (for F0)
+ - transmission_roughness (optional)
 """
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Dict, Optional, Tuple
 
@@ -46,6 +60,8 @@ BAKE_SUFFIX_MAP = {
     "Roughness": "ROUGHNESS",
     "Metallic": "METAL",
     "Transmission": "TRANSMISSION",
+    # Optional coverage override; otherwise DIFFUSE alpha is used
+    "Coverage": "COVERAGE",
 }
 
 
@@ -55,6 +71,10 @@ class MaterialSampler:
     def __init__(self):
         # Cache baked maps per (mesh_name, material_name, bake_dir)
         self.cache: Dict[Tuple[str, str, Optional[str]], Dict[str, np.ndarray]] = {}
+        self.sidecars: Dict[Tuple[str, str, Optional[str]], Dict] = {}
+        # per-frame mesh cache: {(obj_name): (eval_obj, mesh, frame_idx)}
+        self.mesh_cache: Dict[str, Tuple[object, object, int]] = {}
+        self.mesh_epoch: Optional[int] = None
 
     @classmethod
     def get(cls) -> "MaterialSampler":
@@ -86,6 +106,27 @@ class MaterialSampler:
         except Exception:
             return None
 
+    def _load_sidecar(
+        self, export_bake_dir: Optional[str], obj_name: str, mat_name: str
+    ) -> Optional[Dict]:
+        if export_bake_dir is None:
+            return None
+        base = self._clean_name(obj_name)
+        mat = self._clean_name(mat_name)
+        # Prefer object+material.json; fallback to object.json
+        candidates = [
+            os.path.join(export_bake_dir, f"{base}_{mat}.json"),
+            os.path.join(export_bake_dir, f"{base}.json"),
+        ]
+        for c in candidates:
+            try:
+                if os.path.isfile(c):
+                    with open(c, "r", encoding="utf-8") as fh:
+                        return json.load(fh)
+            except Exception:
+                continue
+        return None
+
     def _load_export_bakes(
         self, obj, export_bake_dir: Optional[str]
     ) -> Dict[str, np.ndarray]:
@@ -101,6 +142,23 @@ class MaterialSampler:
                 out[k] = arr
         return out
 
+    def _ensure_mesh_epoch(self, frame_idx: int):
+        if self.mesh_epoch is None:
+            self.mesh_epoch = frame_idx
+            return
+        if self.mesh_epoch != frame_idx:
+            # clear previous meshes
+            try:
+                for eval_obj, _, _ in self.mesh_cache.values():
+                    try:
+                        eval_obj.to_mesh_clear()  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            self.mesh_cache.clear()
+            self.mesh_epoch = frame_idx
+
     def sample_properties(
         self,
         obj,
@@ -114,8 +172,22 @@ class MaterialSampler:
         Returns a dict subset of {base_color, roughness, metallic, transmission}
         when successful, otherwise None.
         """
-        eval_obj = obj.evaluated_get(depsgraph)
-        mesh = eval_obj.to_mesh()
+        # Cache evaluated meshes per object per frame to avoid repeated to_mesh calls
+        try:
+            from bpy import context as _bpy_context  # type: ignore
+
+            curr_frame = int(_bpy_context.scene.frame_current)  # type: ignore
+        except Exception:
+            curr_frame = -1
+        self._ensure_mesh_epoch(curr_frame)
+
+        obj_key = getattr(obj, "name", None) or str(id(obj))
+        if obj_key in self.mesh_cache:
+            eval_obj, mesh, _ = self.mesh_cache[obj_key]
+        else:
+            eval_obj = obj.evaluated_get(depsgraph)
+            mesh = eval_obj.to_mesh()
+            self.mesh_cache[obj_key] = (eval_obj, mesh, curr_frame)
         try:
             uv = _hit_uv(eval_obj, mesh, poly_index, hit_world)
             if uv is None:
@@ -123,20 +195,34 @@ class MaterialSampler:
             # find material of polygon
             poly = mesh.polygons[poly_index]
             mat_idx = int(getattr(poly, "material_index", 0))
-            mat = (
-                obj.material_slots[mat_idx].material
-                if (obj.material_slots and mat_idx < len(obj.material_slots))
-                else obj.active_material
-            )
+            # Prefer evaluated object's material slots for consistency with evaluated mesh
+            if hasattr(eval_obj, "material_slots") and len(eval_obj.material_slots) > 0:
+                if mat_idx < len(eval_obj.material_slots):
+                    mat = eval_obj.material_slots[mat_idx].material
+                else:
+                    mat = eval_obj.active_material
+            else:
+                mat = (
+                    obj.material_slots[mat_idx].material
+                    if (obj.material_slots and mat_idx < len(obj.material_slots))
+                    else obj.active_material
+                )
             if mat is None:
                 return None
             mesh_name = getattr(obj.data, "name", "") or ""
+            obj_name = getattr(obj, "name", "") or mesh_name
             mat_name = getattr(mat, "name", "") or ""
             key = (mesh_name, mat_name, export_bake_dir)
             if key not in self.cache:
                 baked = self._load_export_bakes(obj, export_bake_dir)
                 self.cache[key] = baked
             baked = self.cache[key]
+            # Load sidecar once per (obj,mat,dir)
+            if key not in self.sidecars:
+                self.sidecars[key] = (
+                    self._load_sidecar(export_bake_dir, obj_name, mat_name) or {}
+                )
+            sidecar = self.sidecars[key]
             out: Dict = {}
 
             def pick_scalar(name: str, default=0.0):
@@ -152,14 +238,50 @@ class MaterialSampler:
                 r, g, b, _ = _sample_px_bilinear(px, uv)
                 return (float(r), float(g), float(b))
 
+            def pick_coverage() -> float:
+                # Prefer explicit COVERAGE bake
+                px = baked.get("Coverage")
+                if px is not None:
+                    v = float(_sample_px_bilinear(px, uv)[0])
+                    return max(0.0, min(1.0, v))
+                # Fall back to DIFFUSE alpha channel
+                px = baked.get("Base Color")
+                if px is not None:
+                    a = float(_sample_px_bilinear(px, uv)[3])
+                    return max(0.0, min(1.0, a))
+                # No coverage present in bakes → error (strict baked-only)
+                raise ValueError(
+                    f"Missing coverage (COVERAGE.png or DIFFUSE alpha) for {mesh_name}:{mat_name}"
+                )
+
             out["base_color"] = pick_rgb("Base Color", (1.0, 1.0, 1.0))
             out["roughness"] = pick_scalar("Roughness", 0.5)
             out["metallic"] = pick_scalar("Metallic", 0.0)
             out["transmission"] = pick_scalar("Transmission", 0.0)
+            out["coverage"] = pick_coverage()
+
+            # Merge in sidecar metadata; require at least alpha semantics and a BRDF scalar
+            if not sidecar:
+                raise ValueError(
+                    f"Missing sidecar JSON for {mesh_name}:{mat_name} in {export_bake_dir}"
+                )
+            # Normalize keys
+            alpha_mode = str(sidecar.get("alpha_mode", "BLEND")).upper()
+            alpha_clip = float(sidecar.get("alpha_clip", 0.5))
+            out["alpha_mode"] = alpha_mode
+            out["alpha_clip"] = alpha_clip
+            # BRDF scalar: prefer ior, else specular
+            if "ior" in sidecar:
+                out["ior"] = float(sidecar["ior"])
+            elif "specular" in sidecar:
+                out["specular"] = float(sidecar["specular"])
+            else:
+                raise ValueError(
+                    f"Sidecar missing 'ior' or 'specular' for {mesh_name}:{mat_name}"
+                )
+            if "transmission_roughness" in sidecar:
+                out["transmission_roughness"] = float(sidecar["transmission_roughness"])
 
             return out
-        finally:
-            try:
-                eval_obj.to_mesh_clear()
-            except Exception:
-                pass
+        except Exception:
+            return None

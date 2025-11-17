@@ -1,3 +1,9 @@
+"""LiDAR I/O and packaging tests.
+
+Verifies that `process_frame` writes a PLY, camview package, and calibration
+JSON when bakes are provided, using a small synthetic scene.
+"""
+
 import json
 
 import pytest
@@ -14,6 +20,7 @@ from tests.lidar.conftest import make_camera, make_plane_with_material
 
 
 def test_process_frame_writes_outputs_with_bakes(tmp_path, bake_scene):
+    """End‑to‑end per‑frame run writes PLY, camview, and calibration JSON."""
     _ = make_plane_with_material(size=5.0, location=(0, 0, 0))
     cam = make_camera(location=(0, 0, 3))
     scene = bpy.context.scene

@@ -1,3 +1,10 @@
+"""LiDAR baked material tests.
+
+Verifies that per‑hit material properties are read from exporter bakes, that
+albedo changes require re‑bake to affect outputs, and that alpha semantics are
+respected (BLEND scales; CLIP culls).
+"""
+
 import numpy as np
 import pytest
 
@@ -14,6 +21,7 @@ from tests.lidar.conftest import _set_principled, make_camera, make_plane_with_m
 
 
 def _one_ray():
+    """Return a single downward ray from z=3 toward the origin."""
     origins = np.array([[0.0, 0.0, 3.0]], dtype=np.float64)
     dirs = np.array([[0.0, 0.0, -1.0]], dtype=np.float64)
     rings = np.array([0], dtype=np.uint16)
@@ -22,6 +30,7 @@ def _one_ray():
 
 
 def test_albedo_change_requires_rebake(bake_scene):
+    """Changing albedo affects reflectivity only after re‑baking textures."""
     plane, mat = make_plane_with_material(
         size=2.0, location=(0, 0, 0), base_color=(0.2, 0.2, 0.2, 1.0)
     )
@@ -49,6 +58,7 @@ def test_albedo_change_requires_rebake(bake_scene):
 
 
 def test_baked_property_extraction(bake_scene):
+    """Sampler returns baked BaseColor/Roughness/Metallic/Transmission at hits."""
     plane, mat = make_plane_with_material(
         size=2.0,
         location=(0, 0, 0),
@@ -79,6 +89,7 @@ def test_baked_property_extraction(bake_scene):
 
 
 def test_alpha_blend_and_clip(bake_scene):
+    """BLEND scales energy by coverage; CLIP below threshold removes returns."""
     plane, mat = make_plane_with_material(
         size=2.0, location=(0, 0, 0), base_color=(0.8, 0.8, 0.8, 1.0)
     )

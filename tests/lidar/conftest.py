@@ -131,6 +131,7 @@ def bake_scene(tmp_path):
             except Exception:
                 pass
 
+        sidecars = []
         for obj in list(bpy.context.scene.objects):
             if getattr(obj, "type", "") != "MESH":
                 continue
@@ -173,6 +174,45 @@ def bake_scene(tmp_path):
             save_rgba_png(f"{cname}_ROUGHNESS", (rough, rough, rough, 1.0))
             save_rgba_png(f"{cname}_METAL", (metal, metal, metal, 1.0))
             save_rgba_png(f"{cname}_TRANSMISSION", (trans, trans, trans, 1.0))
+
+            # Record sidecar for strict baked-only runtime
+            try:
+                alpha_mode = str(getattr(mat, "blend_method", "BLEND")).upper()
+            except Exception:
+                alpha_mode = "BLEND"
+            try:
+                alpha_clip = float(getattr(mat, "alpha_threshold", 0.5) or 0.5)
+            except Exception:
+                alpha_clip = 0.5
+            # Prefer IOR, else Specular
+            sidecar = {
+                "alpha_mode": alpha_mode,
+                "alpha_clip": alpha_clip,
+                "transmission_roughness": 0.0,
+            }
+            try:
+                ior = float(bsdf.inputs["IOR"].default_value)
+                sidecar["ior"] = ior
+            except Exception:
+                try:
+                    sidecar["specular"] = float(bsdf.inputs["Specular"].default_value)
+                except Exception:
+                    sidecar["specular"] = 0.5
+            try:
+                tr = bsdf.inputs.get("Transmission Roughness")
+                if tr is not None:
+                    sidecar["transmission_roughness"] = float(tr.default_value)
+            except Exception:
+                pass
+            sidecars.append((cname, clean(mat.name or "Mat"), sidecar))
+
+        # Write per-object-material sidecars
+        import json
+
+        for cname, mname, sc in sidecars:
+            spath = texdir / f"{cname}_{mname}.json"
+            with spath.open("w", encoding="utf-8") as fh:
+                json.dump(sc, fh, indent=2)
 
         return texdir
 

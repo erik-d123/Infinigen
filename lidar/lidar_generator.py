@@ -466,7 +466,6 @@ def main(argv: Sequence[str] | None = None):
         enable_secondary=bool(args.secondary),
         auto_expose=bool(args.auto_expose),
         ply_binary=bool(args.ply_binary),
-        prefer_ior=True,
         # Material sampling: baked-only (require exporter textures)
         export_bake_dir=auto_bake,
     )

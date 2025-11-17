@@ -1,3 +1,10 @@
+"""LiDAR baked transmission tests.
+
+Ensures transmissive surfaces reduce near‑surface reflectivity and can produce
+an optional pass‑through secondary at a farther range, consistent with the
+intensity model.
+"""
+
 import numpy as np
 import pytest
 
@@ -12,6 +19,7 @@ from tests.lidar.conftest import _set_principled, make_camera, make_plane_with_m
 
 
 def _one_ray():
+    """Return a single downward ray from z=3 toward the origin."""
     origins = np.array([[0.0, 0.0, 3.0]], dtype=np.float64)
     dirs = np.array([[0.0, 0.0, -1.0]], dtype=np.float64)
     rings = np.array([0], dtype=np.uint16)
@@ -20,6 +28,7 @@ def _one_ray():
 
 
 def test_transmission_reduces_reflectivity_and_adds_secondary(bake_scene, lidar_cfg):
+    """Transmissive surface dims the near return and may add a farther secondary."""
     # Opaque wall at z=0, transmissive plane at z=1.5
     wall, wall_mat = make_plane_with_material(
         size=5.0,

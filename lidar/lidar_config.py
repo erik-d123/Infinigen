@@ -1,16 +1,13 @@
-"""Configuration and sensor presets for indoor LiDAR generation.
+"""Configuration and sensor presets for indoor LiDAR generation (baked‑only).
 
-Provides a small dataclass `LidarConfig` with sensible defaults for indoor
-scenes, plus a few named presets for common sensors (ring counts, ranges).
+LidarConfig intentionally omits any Principled/material fallbacks. All
+material signals must come from exporter outputs (baked textures + sidecars).
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Optional
-
-# Alpha fallback when Principled Alpha is unset
-DEFAULT_OPACITY: float = 1.0
 
 # Sensor presets tuned for indoor scenes (rings, max_range in meters)
 LIDAR_PRESETS: Dict[str, Dict[str, float]] = {
@@ -42,13 +39,13 @@ class LidarConfig:
     global_scale: float = 1.0  # used when auto_expose=False
     target_percentile: float = 95.0  # auto exposure
     target_intensity: float = 200.0  # 8-bit target
-    default_opacity: float = DEFAULT_OPACITY  # alpha-as-coverage fallback
-    prefer_ior: bool = True  # derive F0 from IOR when present
 
     # Ranges and angular dropout
     min_range: float = 0.05  # indoor close hits
     max_range: float = 100.0  # overridden by preset
     grazing_dropout_cos_thresh: float = 0.05  # skip shallow hits
+    # Mild angle attenuation of specular lobe to account for footprint effects
+    specular_angle_power: float = 0.5  # multiplier: R_spec *= cos_i ** k
 
     # Secondary return controls (pass-through)
     enable_secondary: bool = False
@@ -74,7 +71,6 @@ class LidarConfig:
             self.max_range = float(p["max_range"])
         if self.force_azimuth_steps is not None:
             self.azimuth_steps = int(self.force_azimuth_steps)
-        self.default_opacity = float(min(1.0, max(0.0, self.default_opacity)))
         self.grazing_dropout_cos_thresh = float(
             min(1.0, max(0.0, self.grazing_dropout_cos_thresh))
         )

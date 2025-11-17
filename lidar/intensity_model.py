@@ -1,41 +1,27 @@
-"""Material sampling and compact reflectance model for indoor LiDAR.
+"""Material sampling and compact reflectance model for indoor LiDAR (baked‑only).
 
-This module extracts a minimal set of Principled BSDF parameters (preferring
-exporter‑baked textures when available) and computes a compact radiometric
-response suitable for LiDAR:
+Runtime reads only exporter outputs:
+ - Per-hit PBR values from baked textures via MaterialSampler
+ - Per-material semantics from sidecar JSONs (alpha_mode/clip, ior/specular, etc.)
 
-- Fresnel via Schlick, metallic mixing, roughness shaping
-- Lambertian diffuse without 1/pi (indoor, compact)
-- Transmission term and a residual for an optional pass‑through return
-- Alpha semantics are applied by the caller (raycaster) exactly once
+We never evaluate Blender node graphs at runtime.
 
-No node graphs are evaluated at runtime; sampling is baked‑only.
+Radiometry:
+ - Fresnel via Schlick with metallic mixing and roughness shaping
+ - Lambertian diffuse (no 1/pi) for a compact indoor model
+ - Transmission term and residual for optional pass-through secondary
+ - Alpha semantics are applied once by the raycaster
 """
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
-
-import bpy
-
-# Local default in case lidar_config is not importable here
-try:
-    # used only for default coverage when Alpha is effectively unset
-    from lidar.lidar_config import (
-        DEFAULT_OPACITY as _CFG_DEFAULT_OPACITY,  # type: ignore
-    )
-except Exception:
-    _CFG_DEFAULT_OPACITY = 1.0
+from typing import Dict, Tuple
 
 
-# Lazy import to avoid heavy imports when running pure unit tests
-def _get_default_opacity(cfg) -> float:
-    """Return default opacity fallback from config or module constant.
-
-    Used only when Principled Alpha is effectively unset (not linked and at
-    default). The raycaster applies the resulting coverage once.
-    """
-    return float(getattr(cfg, "default_opacity", _CFG_DEFAULT_OPACITY))
+def _require(x, msg: str):
+    if x is None:
+        raise ValueError(msg)
+    return x
 
 
 def _saturate(x: float) -> float:
@@ -76,194 +62,54 @@ def transmissive_reflectance(cos_i: float, ior: float) -> float:
     return F_schlick(max(0.0, float(cos_i)), f0)
 
 
-def _find_principled_bsdf(mat) -> Optional["bpy.types.Node"]:
-    """Locate the Principled BSDF node feeding the material output if present."""
-    if not (mat and getattr(mat, "use_nodes", False) and mat.node_tree):
-        return None
-    nt = mat.node_tree
-
-    # 1) Try to find the Principled BSDF directly feeding the Material Output's Surface
-    outputs = [n for n in nt.nodes if getattr(n, "type", "") == "OUTPUT_MATERIAL"]
-    for out in outputs:
-        surf = out.inputs.get("Surface")
-        if surf is None:
-            continue
-        for link in nt.links:
-            if link.to_node is out and link.to_socket is surf:
-                if getattr(link.from_node, "type", "") == "BSDF_PRINCIPLED":
-                    return link.from_node
-
-    # 2) Fallback: first Principled node found
-    for n in nt.nodes:
-        if getattr(n, "type", "") == "BSDF_PRINCIPLED":
-            return n
-    return None
-
-
-def _get_input_default(bsdf, names, default):
-    """Read an unlinked scalar input from a Principled node or return default."""
-    for n in names:
-        sock = bsdf.inputs.get(n)
-        if sock is not None and not sock.is_linked:
-            try:
-                return float(sock.default_value)
-            except Exception:
-                pass
-    return float(default)
-
-
-def _get_color_default(bsdf, name="Base Color", default=(0.8, 0.8, 0.8)):
-    """Read an unlinked color input (RGB) from a Principled node or default."""
-    sock = bsdf.inputs.get(name)
-    if sock is not None and not sock.is_linked:
-        try:
-            rgba = tuple(sock.default_value)
-            return tuple(max(0.0, min(1.0, float(c))) for c in rgba[:3])
-        except Exception:
-            pass
-    return tuple(default)
-
-
 def extract_material_properties(
     obj, poly_index, depsgraph, hit_world=None, cfg=None
 ) -> Dict:
-    """Extract minimal Principled inputs for the LiDAR intensity model.
+    """Return baked-only properties required by the intensity model.
 
-    Preference order for inputs:
-    1) Exporter‑baked textures sampled at the hit UV (if provided)
-    2) Unlinked Principled inputs (defaults) from the material
-
-    Returns a dict including keys like base_color, metallic, specular, roughness,
-    transmission, ior, transmission_roughness, optional opacity (coverage), and
-    flags for alpha semantics.
+    Requires cfg.export_bake_dir and 'hit_world' to sample UVs.
     """
-    props = dict(
-        base_color=(0.8, 0.8, 0.8),
-        metallic=0.0,
-        specular=0.5,
-        roughness=0.5,
-        transmission=0.0,
-        ior=1.45,
-        transmission_roughness=0.0,
-        # None means: use cfg.default_opacity fallback unless explicitly set/sampled
-        opacity=None,
-        # Alpha semantics
-        alpha_mode="BLEND",  # BLEND | HASHED | CLIP
-        alpha_clip=0.5,
-        diffuse_scale=1.0,
-        specular_scale=1.0,
-        is_glass_hint=False,
+    from lidar.material_sampler import MaterialSampler
+
+    _require(cfg, "extract_material_properties requires cfg with export_bake_dir")
+    _require(
+        getattr(cfg, "export_bake_dir", None),
+        "export_bake_dir must be set (strict baked-only)",
     )
-    # Resolve material at polygon
-    eval_obj = obj.evaluated_get(depsgraph)
-    mesh = eval_obj.to_mesh()
-    poly = mesh.polygons[poly_index]
-    mat_index = getattr(poly, "material_index", 0)
-    mat = (
-        eval_obj.material_slots[mat_index].material
-        if eval_obj.material_slots and mat_index < len(eval_obj.material_slots)
-        else obj.active_material
+    _require(hit_world is not None, "hit_world required for UV sampling")
+
+    ms = MaterialSampler.get()
+    sampled = ms.sample_properties(
+        obj,
+        depsgraph,
+        poly_index,
+        hit_world,
+        export_bake_dir=getattr(cfg, "export_bake_dir", None),
     )
+    _require(sampled, "MaterialSampler returned no baked properties")
 
-    bsdf = _find_principled_bsdf(mat)
-    if bsdf is None:
-        # Record alpha semantics if available on the material
-        if mat is not None:
-            props["alpha_mode"] = str(
-                getattr(mat, "blend_method", props["alpha_mode"])
-            ).upper()
-            clip = getattr(mat, "alpha_threshold", props["alpha_clip"])
-            try:
-                props["alpha_clip"] = float(clip)
-            except Exception:
-                pass
-        return props
+    props: Dict = {
+        "base_color": sampled["base_color"],
+        "metallic": float(sampled["metallic"]),
+        "roughness": float(sampled["roughness"]),
+        "transmission": float(sampled.get("transmission", 0.0)),
+        "transmission_roughness": float(sampled.get("transmission_roughness", 0.0)),
+        "opacity": float(sampled["coverage"]),
+        "alpha_mode": str(sampled["alpha_mode"]).upper(),
+        "alpha_clip": float(sampled["alpha_clip"]),
+        # Scales kept for compatibility in compute_intensity
+        "diffuse_scale": 1.0,
+        "specular_scale": 1.0,
+    }
+    if "ior" in sampled:
+        props["ior"] = float(sampled["ior"])
+    elif "specular" in sampled:
+        props["specular"] = float(sampled["specular"])
+    else:
+        raise ValueError("Sidecar missing ior/specular (strict baked-only)")
 
-    # Principled v1/v2 compatibility
-    props["base_color"] = _get_color_default(bsdf, "Base Color", props["base_color"])
-    props["metallic"] = _get_input_default(bsdf, ["Metallic"], props["metallic"])
-    props["specular"] = _get_input_default(
-        bsdf, ["Specular", "Specular IOR Level"], props["specular"]
-    )
-    props["roughness"] = _get_input_default(bsdf, ["Roughness"], props["roughness"])
-    # Transmission socket was renamed in some builds
-    t_main = _get_input_default(bsdf, ["Transmission"], 0.0)
-    t_w = _get_input_default(bsdf, ["Transmission Weight"], 0.0)
-    props["transmission"] = max(t_main, t_w)
-    props["ior"] = _get_input_default(bsdf, ["IOR"], props["ior"])
-    # Optional Transmission Roughness
-    props["transmission_roughness"] = _get_input_default(
-        bsdf, ["Transmission Roughness"], props["transmission_roughness"]
-    )
-    # Clearcoat omitted for essential scope
-    # Alpha (coverage): if unlinked and intentionally set away from default 1.0, honor it;
-    # otherwise leave as None to allow cfg.default_opacity fallback in compute_intensity.
-    alpha_sock = bsdf.inputs.get("Alpha")
-    if alpha_sock is not None and not alpha_sock.is_linked:
-        val = (
-            float(alpha_sock.default_value)
-            if alpha_sock.default_value is not None
-            else 1.0
-        )
-        if abs(val - 1.0) > 1e-6:
-            props["opacity"] = _saturate(val)
-            clip = float(props.get("alpha_clip", 0.5))
-            if val < clip:
-                props["alpha_mode"] = "CLIP"
-
-    # Record material alpha semantics for CLIP/HASHED/BLEND handling
-    if mat is not None:
-        mode_from_mat = (
-            getattr(mat, "blend_method", props["alpha_mode"]) or props["alpha_mode"]
-        )
-        if str(props.get("alpha_mode", "")).upper() != "CLIP":
-            props["alpha_mode"] = str(mode_from_mat).upper()
-        clip = getattr(mat, "alpha_threshold", props["alpha_clip"])
-        try:
-            props["alpha_clip"] = float(clip)
-        except Exception:
-            pass
-
-    # Prefer Infinigen export bakes when a textures directory is provided; never bake here
-    if (
-        cfg is not None
-        and hit_world is not None
-        and getattr(cfg, "export_bake_dir", None)
-    ):
-        try:
-            from lidar.material_sampler import MaterialSampler
-
-            ms = MaterialSampler.get()
-            export_dir = getattr(cfg, "export_bake_dir", None)
-            sampled = ms.sample_properties(
-                obj,
-                depsgraph,
-                poly_index,
-                hit_world,
-                export_bake_dir=export_dir,
-            )
-            if sampled:
-                for k in [
-                    "base_color",
-                    "roughness",
-                    "metallic",
-                    "transmission",
-                    "opacity",
-                ]:
-                    if k in sampled and sampled[k] is not None:
-                        props[k] = sampled[k]
-        except Exception:
-            pass
-
-    # Glass hint heuristic for non-opaque transmissive
-    _op = (
-        props["opacity"]
-        if props.get("opacity", None) is not None
-        else _CFG_DEFAULT_OPACITY
-    )
-    op_val = float(_op) if _op is not None else _CFG_DEFAULT_OPACITY
     props["is_glass_hint"] = bool(
-        float(props.get("transmission", 0.0)) > 0.5 or op_val < 0.5
+        float(props.get("transmission", 0.0)) > 0.5 or float(props["opacity"]) < 0.5
     )
     return props
 
@@ -280,7 +126,6 @@ def compute_intensity(props: Dict, cos_i: float, R: float, cfg):
     """
     # Config
     dist_p = float(getattr(cfg, "distance_power", 2.0))
-    prefer_ior = bool(getattr(cfg, "prefer_ior", True))
 
     # Inputs
     cos_i = max(0.0, float(cos_i))
@@ -288,7 +133,9 @@ def compute_intensity(props: Dict, cos_i: float, R: float, cfg):
 
     base_rgb = tuple(props.get("base_color", (0.8, 0.8, 0.8)))
     metallic = _saturate(props.get("metallic", 0.0))
-    specular = _saturate(props.get("specular", 0.5))
+    specular = props.get("specular", None)
+    if specular is not None:
+        specular = _saturate(specular)
     rough = _saturate(props.get("roughness", 0.5))
     ior = float(props.get("ior", 1.45) or 0.0)
     transmission = _saturate(props.get("transmission", 0.0))
@@ -296,11 +143,8 @@ def compute_intensity(props: Dict, cos_i: float, R: float, cfg):
     diffuse_scale = max(0.0, float(props.get("diffuse_scale", 1.0)))
     specular_scale = max(0.0, float(props.get("specular_scale", 1.0)))
 
-    # Coverage fallback: use cfg.default_opacity only if opacity was not explicitly set
-    if "opacity" in props and props["opacity"] is not None:
-        alpha_cov = _saturate(props["opacity"])  # type: ignore[arg-type]
-    else:
-        alpha_cov = _saturate(_get_default_opacity(cfg))
+    # Coverage must be supplied by sampler (coverage or DIFFUSE alpha)
+    alpha_cov = _saturate(props.get("opacity", 1.0))
 
     # Fresnel base
     if metallic > 0.0:
@@ -308,9 +152,11 @@ def compute_intensity(props: Dict, cos_i: float, R: float, cfg):
             (1.0 - metallic) * (0.08 * specular) + metallic * c for c in base_rgb
         )
     else:
-        if prefer_ior and ior and ior > 1.0:
+        if ior and ior > 1.0:
             F0 = ((ior - 1.0) / (ior + 1.0)) ** 2
         else:
+            if specular is None:
+                raise ValueError("Missing both ior and specular for Fresnel base")
             F0 = 0.08 * specular
         F0 = max(0.0, min(1.0, F0))
         F0_rgb = (F0, F0, F0)
@@ -319,8 +165,14 @@ def compute_intensity(props: Dict, cos_i: float, R: float, cfg):
     F = _luma(F_rgb)
 
     # Specular lobe (dielectrics honor specular_scale; metals ignore Principled Specular)
-    # Specular amplitude shaped by roughness (remove transmission_roughness suppression for dielectrics)
+    # Specular amplitude shaped by roughness, with mild angle attenuation to account for footprint effects
     R_spec = F * (max(0.0, 1.0 - rough) ** 2)
+    try:
+        k = float(getattr(cfg, "specular_angle_power", 0.5))
+    except Exception:
+        k = 0.5
+    if k > 0.0:
+        R_spec *= max(0.0, cos_i) ** k
     if metallic <= 0.0:
         R_spec *= specular_scale
     R_spec = max(0.0, min(1.0, R_spec))

@@ -50,6 +50,90 @@ def _ensure_textures_dir(out_dir: Path, in_dir: Path) -> None:
         tgt.mkdir(parents=True, exist_ok=True)
 
 
+def _clean(name: str) -> str:
+    return name.replace(" ", "_").replace(".", "_")
+
+
+def _find_principled(mat):
+    try:
+        if not (mat and getattr(mat, "use_nodes", False) and mat.node_tree):
+            return None
+        for n in mat.node_tree.nodes:
+            if getattr(n, "type", "") == "BSDF_PRINCIPLED":
+                return n
+    except Exception:
+        return None
+    return None
+
+
+def _write_sidecars(out_dir: Path) -> None:
+    """Write per (object, material) sidecar JSONs next to baked textures.
+
+    Fields: alpha_mode, alpha_clip, ior or specular, transmission_roughness.
+    """
+    try:
+        import json
+
+        import bpy  # type: ignore
+    except Exception:
+        return
+
+    # Collect all textures directories created by exporter
+    textures_dirs = [p for p in out_dir.rglob("textures") if p.is_dir()]
+    if not textures_dirs:
+        return
+
+    # Build sidecar dicts keyed by (object, material)
+    sidecars = []
+    for obj in bpy.context.scene.objects:
+        if getattr(obj, "type", "") != "MESH" or not obj.material_slots:
+            continue
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is None:
+                continue
+            record = {
+                "alpha_mode": str(getattr(mat, "blend_method", "BLEND")).upper(),
+                "alpha_clip": float(getattr(mat, "alpha_threshold", 0.5) or 0.5),
+                "transmission_roughness": 0.0,
+            }
+            bsdf = _find_principled(mat)
+            if bsdf is not None:
+                try:
+                    record["ior"] = float(bsdf.inputs.get("IOR").default_value)
+                except Exception:
+                    try:
+                        record["specular"] = float(
+                            bsdf.inputs.get("Specular").default_value
+                        )
+                    except Exception:
+                        pass
+                try:
+                    tr = bsdf.inputs.get("Transmission Roughness")
+                    if tr is not None:
+                        record["transmission_roughness"] = float(tr.default_value)
+                except Exception:
+                    pass
+            # If neither ior nor specular found, set a safe specular default
+            if ("ior" not in record) and ("specular" not in record):
+                record["specular"] = 0.5
+
+            sidecars.append((obj.name, mat.name, record))
+
+    if not sidecars:
+        return
+
+    # Write sidecars into every textures dir we find
+    for texdir in textures_dirs:
+        for oname, mname, rec in sidecars:
+            outp = texdir / f"{_clean(oname)}_{_clean(mname)}.json"
+            try:
+                with outp.open("w", encoding="utf-8") as fh:
+                    json.dump(rec, fh, indent=2)
+            except Exception:
+                continue
+
+
 def main(argv: list[str]) -> int:
     # Expect: runner.py -- <in_dir> <out_dir> <res>
     if "--" in argv:
@@ -96,6 +180,11 @@ def main(argv: list[str]) -> int:
     from infinigen.tools import export as ex
 
     ex.main(ex.make_args())
+    # After exporter writes textures, emit sidecars alongside
+    try:
+        _write_sidecars(out_dir)
+    except Exception:
+        pass
     return 0
 
 

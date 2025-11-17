@@ -17,11 +17,15 @@ def _props(**over):
     return p
 
 
-def test_default_opacity_fallback():
+def test_coverage_scales_intensity():
     cfg = LidarConfig()
-    cfg.default_opacity = 0.3
-    _, _, _, _, alpha_cov = compute_intensity(_props(), cos_i=1.0, R=3.0, cfg=cfg)
-    assert abs(alpha_cov - 0.3) < 1e-6
+    base = _props()
+    base["opacity"] = 1.0
+    I_full, _, _, _, a_full = compute_intensity(base, cos_i=1.0, R=3.0, cfg=cfg)
+    base["opacity"] = 0.25
+    I_quarter, _, _, _, a_quarter = compute_intensity(base, cos_i=1.0, R=3.0, cfg=cfg)
+    # Reflectivity/intensity from compute_intensity are pre-alpha; simulate raycaster scaling
+    assert (I_quarter * a_quarter) < (I_full * a_full) and a_quarter < a_full
 
 
 def test_angle_decreases_intensity():
@@ -65,13 +69,11 @@ def test_metallic_mixing_increases_fresnel():
     assert refl_m > refl_d
 
 
-def test_ior_preferred_over_specular_when_enabled():
+def test_ior_produces_higher_f0_than_low_specular():
     cfg = LidarConfig()
-    cfg.prefer_ior = True
     props = _props(specular=0.1)
     p1 = dict(props, ior=1.8)
     _, _, refl1, *_ = compute_intensity(p1, cos_i=0.98, R=3.0, cfg=cfg)
-    cfg.prefer_ior = False
     _, _, refl2, *_ = compute_intensity(props, cos_i=0.98, R=3.0, cfg=cfg)
     assert refl1 > refl2
 

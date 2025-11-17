@@ -15,6 +15,9 @@ try:
 except Exception:
     bpy = None
 
+# single source of truth for camera<-sensor rotation
+from lidar.lidar_scene import sensor_to_camera_rotation
+
 
 def world_to_frame_matrix(camera_obj, frame: str = "sensor") -> np.ndarray:
     """Return 4x4 transform world→{world|camera|sensor} for PLY export.
@@ -38,14 +41,7 @@ def world_to_frame_matrix(camera_obj, frame: str = "sensor") -> np.ndarray:
         return Twc_inv
 
     # camera <- sensor rotation (R_cs)
-    R_cs = np.array(
-        [
-            [0.0, -1.0, 0.0],  # cam X <- -Y_sensor
-            [0.0, 0.0, 1.0],  # cam Y <- +Z_sensor
-            [-1.0, 0.0, 0.0],  # cam Z <- -X_sensor
-        ],
-        dtype=float,
-    )
+    R_cs = np.array(sensor_to_camera_rotation(), dtype=float)
     # world -> sensor = (camera -> sensor) @ (world -> camera)
     R_sc = R_cs.T
     Tcw = Twc_inv

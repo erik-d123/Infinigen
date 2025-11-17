@@ -1,3 +1,9 @@
+"""LiDAR baked kinematics tests.
+
+Checks that incidence angle and distance affect intensity/range as expected and
+that simple animation across frames updates outputs consistently.
+"""
+
 import math
 
 import numpy as np
@@ -15,6 +21,7 @@ from tests.lidar.conftest import make_camera, make_plane_with_material
 
 
 def _one_ray():
+    """Return a single downward ray from z=3 toward the origin."""
     origins = np.array([[0.0, 0.0, 3.0]], dtype=np.float64)
     dirs = np.array([[0.0, 0.0, -1.0]], dtype=np.float64)
     rings = np.array([0], dtype=np.uint16)
@@ -23,6 +30,7 @@ def _one_ray():
 
 
 def test_tilt_and_distance(bake_scene):
+    """Tilting reduces intensity; increasing distance increases range and dims."""
     plane, _ = make_plane_with_material(
         size=4.0, location=(0, 0, 0), base_color=(0.7, 0.7, 0.7, 1.0), roughness=0.3
     )
@@ -56,6 +64,7 @@ def test_tilt_and_distance(bake_scene):
 
 
 def test_animation_across_frames(bake_scene):
+    """Changing geometry across frames changes ranges and intensities coherently."""
     plane, _ = make_plane_with_material(size=5.0, location=(0, 0, 0))
     _ = make_camera(location=(0, 0, 3))
     scene = bpy.context.scene
