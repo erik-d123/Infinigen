@@ -30,6 +30,26 @@ import numpy as np
 from lidar.mesh_uv import hit_uv as _hit_uv  # reuse
 
 
+def _resolve_tex_dir(export_bake_dir: Optional[str]) -> Optional[str]:
+    """Resolve a user-supplied export dir to the actual textures dir.
+
+    Accepts either the textures dir itself, the export root, or the
+    export_scene.blend parent. Returns the first existing candidate.
+    """
+    if not export_bake_dir:
+        return None
+    eb = export_bake_dir
+    candidates = (
+        eb,
+        os.path.join(eb, "textures"),
+        os.path.join(eb, "export_scene.blend", "textures"),
+    )
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return export_bake_dir
+
+
 def _sample_px_bilinear(px: np.ndarray, uv: Tuple[float, float]) -> np.ndarray:
     """Bilinear sample RGBA at UV in [0, 1)."""
     h, w, _ = px.shape
@@ -111,12 +131,13 @@ class MaterialSampler:
     ) -> Optional[Dict]:
         if export_bake_dir is None:
             return None
+        dir_ = _resolve_tex_dir(export_bake_dir)
         base = self._clean_name(obj_name)
         mat = self._clean_name(mat_name)
         # Prefer object+material.json; fallback to object.json
         candidates = [
-            os.path.join(export_bake_dir, f"{base}_{mat}.json"),
-            os.path.join(export_bake_dir, f"{base}.json"),
+            os.path.join(dir_, f"{base}_{mat}.json"),
+            os.path.join(dir_, f"{base}.json"),
         ]
         for c in candidates:
             try:
@@ -131,12 +152,13 @@ class MaterialSampler:
         self, obj, export_bake_dir: Optional[str]
     ) -> Dict[str, np.ndarray]:
         """Load all known bake maps for an object from a textures directory."""
-        if export_bake_dir is None:
+        dir_ = _resolve_tex_dir(export_bake_dir)
+        if dir_ is None:
             return {}
         base = self._clean_name(obj.name)
         out: Dict[str, np.ndarray] = {}
         for k, suf in BAKE_SUFFIX_MAP.items():
-            p = os.path.join(export_bake_dir, f"{base}_{suf}.png")
+            p = os.path.join(dir_, f"{base}_{suf}.png")
             arr = self._load_png(p)
             if arr is not None:
                 out[k] = arr

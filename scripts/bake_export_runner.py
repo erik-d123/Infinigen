@@ -183,8 +183,13 @@ def main(argv: list[str]) -> int:
     # After exporter writes textures, emit sidecars alongside
     try:
         _write_sidecars(out_dir)
-    except Exception:
-        pass
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        print(
+            f"[bake_export_runner] WARN: failed to write sidecars: {e}", file=sys.stderr
+        )
     return 0
 
 

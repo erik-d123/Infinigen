@@ -86,7 +86,12 @@ def extract_material_properties(
         hit_world,
         export_bake_dir=getattr(cfg, "export_bake_dir", None),
     )
-    _require(sampled, "MaterialSampler returned no baked properties")
+    _require(
+        sampled,
+        f"MaterialSampler returned no baked properties; export_bake_dir={getattr(cfg, 'export_bake_dir', None)!r}. "
+        "Expected PNGs named {object}_{DIFFUSE|ROUGHNESS|METAL|TRANSMISSION}.png and a sidecar "
+        "{object}_{material}.json in that directory.",
+    )
 
     props: Dict = {
         "base_color": sampled["base_color"],

@@ -41,4 +41,12 @@ BLENDER_CONDA_SITE="${BLENDER_CONDA_SITE:-${ENV_PATH:-}/lib/python3.11/site-pack
 python -m infinigen.launch_blender -m infinigen.tools.blendscript_path_append -- \
   --python "$(pwd)/scripts/bake_export_runner.py" -- "$IN_DIR" "$OUT_DIR" "$RES"
 
-echo "[bake_export_textures] Done. Textures at: $OUT_DIR/textures"
+# Print the actual textures directory discovered under OUT_DIR
+REAL_TEXDIR=$(python - "$OUT_DIR" <<'PY'
+import sys, pathlib
+out=pathlib.Path(sys.argv[1])
+cands=[p for p in out.rglob('textures') if p.is_dir()]
+print(str(cands[0] if cands else (out/'textures')))
+PY
+)
+echo "[bake_export_textures] Done. Textures at: $REAL_TEXDIR"

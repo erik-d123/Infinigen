@@ -340,6 +340,11 @@ def run_on_current_scene(
                 auto = _resolve_export_textures(blend_path)
                 if auto:
                     cfg.export_bake_dir = auto
+        else:
+            # Normalize a parent export dir to its textures child if needed
+            auto = _resolve_export_textures(cfg.export_bake_dir)
+            if auto:
+                cfg.export_bake_dir = auto
     except Exception:
         pass
 
