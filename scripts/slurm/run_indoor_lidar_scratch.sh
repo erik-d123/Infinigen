@@ -70,6 +70,7 @@ LO="${FRAMES%-*}"
 HI="${FRAMES#*-}"
 PIPE_OVR=(
   "get_cmd.driver_script='infinigen_examples.generate_indoors'"
+  "get_cmd.interactive_blender=True"
   "iterate_scene_tasks.frame_range=[${LO},${HI}]"
 )
 if [[ -n "$PARTITION" ]]; then
