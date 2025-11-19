@@ -1,9 +1,12 @@
+# Copyright (C) 2024, Princeton University.
+# This source code is licensed under the BSD 3-Clause license found in the LICENSE file in the root directory of this source tree.
+
 """Top‑level CLI and orchestration for indoor LiDAR generation.
 
 Opens a scene (or uses the current one), generates sensor rays from presets,
 casts them against the evaluated depsgraph, computes radiometry using the
 compact intensity model, and saves per‑frame PLY and camview outputs. Material
-inputs are sampled from exporter‑baked PBR textures when provided.
+inputs are sampled directly from Principled BSDF parameters at each ray hit.
 """
 
 from __future__ import annotations
@@ -19,14 +22,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Sequence
 
-import bpy
+try:
+    import bpy
+except ImportError:
+    bpy = None
 import numpy as np
 
 from infinigen.core.util import camera as util_cam
-from lidar.lidar_config import LidarConfig
-from lidar.lidar_io import save_ply
-from lidar.lidar_raycast import generate_sensor_rays, perform_raycasting
-from lidar.lidar_scene import resolve_camera, sensor_to_camera_rotation
+from infinigen.lidar.lidar_engine import (
+    LidarConfig,
+    generate_sensor_rays,
+    perform_raycasting,
+    resolve_camera,
+    save_ply,
+    sensor_to_camera_rotation,
+)
 
 
 def _parse_frames(frames_arg: str) -> List[int]:
@@ -301,25 +311,6 @@ def process_frame(
 # ------------------------- top-level entrypoints -------------------------
 
 
-def _resolve_export_textures(scene_path: str | Path) -> str | None:
-    try:
-        s = Path(scene_path)
-        scene_dir = s.parent
-        scene_name = s.name
-        candidates = [
-            scene_dir / f"export_{scene_name}" / "textures",
-            scene_dir / "export_scene.blend" / "textures",
-            scene_dir.parent / "export" / f"export_{scene_name}" / "textures",
-            scene_dir.parent / "export" / "textures",
-        ]
-        for c in candidates:
-            if c.is_dir():
-                return str(c)
-        return None
-    except Exception:
-        return None
-
-
 def run_on_current_scene(
     output_dir: str, frames: Sequence[int], camera_name: str, cfg_kwargs=None
 ):
@@ -327,32 +318,6 @@ def run_on_current_scene(
     assert bpy is not None, "Must run inside Blender"
     cfg_kwargs = dict(cfg_kwargs or {})
     cfg = LidarConfig(**cfg_kwargs)
-
-    # Require Infinigen export-baked textures; try to auto-detect if not provided
-    try:
-        if not getattr(cfg, "export_bake_dir", None):
-            blend_path = (
-                Path(bpy.data.filepath)
-                if bpy and bpy.data and bpy.data.filepath
-                else None
-            )
-            if blend_path is not None:
-                auto = _resolve_export_textures(blend_path)
-                if auto:
-                    cfg.export_bake_dir = auto
-        else:
-            # Normalize a parent export dir to its textures child if needed
-            auto = _resolve_export_textures(cfg.export_bake_dir)
-            if auto:
-                cfg.export_bake_dir = auto
-    except Exception:
-        pass
-
-    exp = getattr(cfg, "export_bake_dir", None)
-    if not exp or not Path(exp).exists():
-        raise FileNotFoundError(
-            "LiDAR requires exporter-baked PBR textures. Provide --export-bake-dir or run scripts/bake_export_textures.sh"
-        )
 
     scene = bpy.context.scene
     cam = resolve_camera(scene, camera_name)
@@ -406,7 +371,7 @@ def generate_for_scene(
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     """CLI parser for standalone LiDAR generation inside Blender."""
-    p = argparse.ArgumentParser("Infinigen indoor LiDAR (baked-only)")
+    p = argparse.ArgumentParser("Infinigen indoor LiDAR (Principled-first)")
     p.add_argument("scene_path", type=str, help="Path to .blend")
     p.add_argument(
         "--output_dir",
@@ -440,12 +405,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     p.add_argument("--seed", type=int, default=0)
     # Baked textures directory (required); auto-detected when present next to the scene
-    p.add_argument(
-        "--export-bake-dir",
-        type=str,
-        default=None,
-        help="Folder containing exporter-baked PBR textures",
-    )
     return p.parse_args(argv)
 
 
@@ -457,13 +416,6 @@ def main(argv: Sequence[str] | None = None):
         else (argv or sys.argv[1:])
     )
 
-    # Auto-detect baked textures dir if not provided. Check common exporter layouts:
-    #  - <scene_dir>/export_<scene_name>/textures
-    #  - <scene_dir>/export_scene.blend/textures (rare)
-    #  - <scene_dir>/../export/export_<scene_name>/textures
-    #  - <scene_dir>/../export/textures
-    auto_bake = args.export_bake_dir or _resolve_export_textures(args.scene_path)
-
     cfg_kwargs = dict(
         preset=args.preset,
         force_azimuth_steps=args.force_azimuth_steps,
@@ -471,8 +423,6 @@ def main(argv: Sequence[str] | None = None):
         enable_secondary=bool(args.secondary),
         auto_expose=bool(args.auto_expose),
         ply_binary=bool(args.ply_binary),
-        # Material sampling: baked-only (require exporter textures)
-        export_bake_dir=auto_bake,
     )
 
     frames = _parse_frames(args.frames)

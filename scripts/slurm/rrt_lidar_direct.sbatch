@@ -59,13 +59,9 @@ if [[ ! -f "$OUT_ROOT/coarse/scene.blend" ]]; then
   exit 2
 fi
 
-# 2) Bake exporter PBR textures to $OUT_ROOT/export/textures (BaseColor/Rough/Metal/Trans/Normal)
-bash scripts/bake_export_textures.sh "$OUT_ROOT/coarse" "$OUT_ROOT/export" 1024
-
-# 3) Generate LiDAR using the baked textures (baked-only)
+# 2) Generate LiDAR directly from Principled materials
 "$PY" -m infinigen.launch_blender -m lidar.lidar_generator -- \
   "$OUT_ROOT/coarse/scene.blend" \
-  --export-bake-dir "$OUT_ROOT/export/textures" \
   --output_dir "$OUT_ROOT/lidar" \
   --frames 1-200 \
   --camera Camera \

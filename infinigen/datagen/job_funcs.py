@@ -716,6 +716,7 @@ def queue_lidar(
     exclude_gpus=[],
     input_indices=None,
     output_indices=None,
+    lidar_preset="OS1-128",
     **submit_kwargs,
 ):
     """
@@ -761,7 +762,6 @@ def queue_lidar(
     out_dir.mkdir(exist_ok=True, parents=True)
 
     # Export bake textures folder (produced by exporter global task)
-    export_bake_dir = Path(folder) / "export" / "textures"
 
     # Build command line (no gin overrides here; this script has its own CLI)
     cmd = [
@@ -769,7 +769,7 @@ def queue_lidar(
         "-m",
         "infinigen.launch_blender",
         "-m",
-        "lidar.lidar_generator",
+        "infinigen.lidar.lidar_generator",
         "--",
         str(input_folder / "scene.blend"),
         "--output_dir",
@@ -778,8 +778,9 @@ def queue_lidar(
         f"{start_frame}-{last_cam_frame}",
         "--camera",
         cam_name,
-        "--export-bake-dir",
-        str(export_bake_dir),
+        "--preset",
+        lidar_preset,
+        "--auto-expose",
     ]
 
     with (folder / "run_pipeline.sh").open("a") as f:

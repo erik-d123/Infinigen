@@ -558,96 +558,124 @@ def bake_pass(obj, dest: Path, img_size, bake_type, export_usd, export_name=None
 
 
 def bake_special_emit(obj, dest, img_size, export_usd, bake_type, export_name=None):
-    # If at least one material has both a BSDF and non-zero bake type value, then bake
+    """
+    Bake a scalar Principled input (e.g., Metallic or Transmission Weight) to a texture by
+    rewiring that input branch into an Emission shader, then baking the EMIT pass.
+
+    This preserves per‑pixel variation when the Principled input is driven by a texture or
+    procedural graph, instead of baking a flat constant.
+    """
     should_bake = False
 
-    # (Root node, From Socket, To Socket)
+    # Keep track of temporary nodes and links so we can restore materials after baking
+    # links_removed: (node_tree_owner, from_socket, to_socket)
     links_removed = []
+    # links_added: (node_tree_owner, from_socket, to_socket)
     links_added = []
+    # temp_nodes: (node_tree_owner, node)
+    temp_nodes = []
 
     for slot in obj.material_slots:
         mat = slot.material
         if mat is None:
-            logging.warn("No material on mesh, skipping...")
+            logging.warning("No material on mesh, skipping...")
             continue
-        if not mat.use_nodes:
-            logging.warn("Material has no nodes, skipping...")
+        if not mat.use_nodes or mat.node_tree is None:
+            logging.warning("Material has no nodes, skipping...")
             continue
 
         nodes = mat.node_tree.nodes
         principled_bsdf_node = None
-        root_node = None
-        logging.info(f"{mat.name} has {len(nodes)} nodes: {nodes}")
-        for node in nodes:
-            if node.type != "GROUP":
-                continue
-
-            for subnode in node.node_tree.nodes:
-                logging.info(f" [{subnode.type}] {subnode.name} {subnode.bl_idname}")
-                if subnode.type == "BSDF_PRINCIPLED":
-                    logging.debug(f" BSDF_PRINCIPLED: {subnode.inputs}")
-                    principled_bsdf_node = subnode
-                    root_node = node
-
-        if nodes.get("Principled BSDF"):
+        root_node = None  # either the material itself or the owning Group node
+        # Try to find a top-level Principled first
+        if nodes.get("Principled BSDF") is not None:
             principled_bsdf_node = nodes["Principled BSDF"]
             root_node = mat
-        elif not principled_bsdf_node:
-            logging.warn("No Principled BSDF, skipping...")
+        else:
+            # Search within group nodes for a nested Principled
+            for node in nodes:
+                if node.type != "GROUP" or node.node_tree is None:
+                    continue
+                for subnode in node.node_tree.nodes:
+                    if subnode.type == "BSDF_PRINCIPLED":
+                        principled_bsdf_node = subnode
+                        root_node = node
+                        break
+                if principled_bsdf_node is not None:
+                    break
+
+        if principled_bsdf_node is None:
+            logging.warning("No Principled BSDF, skipping material %s", mat.name)
             continue
-        elif ALL_BAKE[bake_type] not in principled_bsdf_node.inputs:
-            logging.warn(f"No {bake_type} input, skipping...")
+        if ALL_BAKE[bake_type] not in principled_bsdf_node.inputs:
+            logging.warning("No %s input on Principled, skipping...", bake_type)
             continue
 
-        # Here, we've found the proper BSDF and bake type input. Set up the scene graph
-        # for baking.
-        outputSoc = principled_bsdf_node.outputs[0].links[0].to_socket
+        # Identify the current output socket that Principled was feeding (to be restored later)
+        if not principled_bsdf_node.outputs[0].links:
+            logging.warning("Principled has no outgoing link, skipping %s", mat.name)
+            continue
+        out_link = principled_bsdf_node.outputs[0].links[0]
+        outputSoc = out_link.to_socket
 
-        # Remove the BSDF link to Output first
-        l = principled_bsdf_node.outputs[0].links[0]
-        from_socket, to_socket = l.from_socket, l.to_socket
-        logging.debug(f"Removing link: {from_socket.name} => {to_socket.name}")
-        root_node.node_tree.links.remove(l)
-        links_removed.append((root_node, from_socket, to_socket))
+        # Remove the Principled→Output link and remember it
+        root_node.node_tree.links.remove(out_link)
+        links_removed.append((root_node, out_link.from_socket, outputSoc))
 
-        # Get bake_type value
+        # Build an Emission node that we will drive by the Principled input branch
+        emiss = root_node.node_tree.nodes.new("ShaderNodeEmission")
+        emiss.inputs["Strength"].default_value = 1.0
+        temp_nodes.append((root_node, emiss))
+
         bake_input = principled_bsdf_node.inputs[ALL_BAKE[bake_type]]
-        bake_val = bake_input.default_value
-        logging.info(f"{bake_type} value: {bake_val}")
+        bake_val = getattr(bake_input, "default_value", 0.0)
 
-        if bake_val > 0:
+        # If the Principled input is linked, route that source into Emission color.
+        # Otherwise, drive Emission color by a constant matching the default value.
+        if getattr(bake_input, "is_linked", False) and bake_input.links:
+            src = bake_input.links[0].from_socket
+            root_node.node_tree.links.new(src, emiss.inputs["Color"])
+            links_added.append((root_node, src, emiss.inputs["Color"]))
+            should_bake = True
+        else:
+            # Constant value fallback (still bake to produce a flat map)
+            rgb = root_node.node_tree.nodes.new("ShaderNodeRGB")
+            rgb.outputs[0].default_value = (bake_val, bake_val, bake_val, 1.0)
+            temp_nodes.append((root_node, rgb))
+            root_node.node_tree.links.new(rgb.outputs[0], emiss.inputs["Color"])
+            links_added.append((root_node, rgb.outputs[0], emiss.inputs["Color"]))
+            # Still bake, even if constant, to keep consistent outputs
             should_bake = True
 
-        # Make a color input matching the metallic value
-        col = root_node.node_tree.nodes.new("ShaderNodeRGB")
-        col.outputs[0].default_value = (bake_val, bake_val, bake_val, 1.0)
+        # Connect Emission to the original target socket (shader→shader)
+        root_node.node_tree.links.new(emiss.outputs[0], outputSoc)
+        links_added.append((root_node, emiss.outputs[0], outputSoc))
 
-        # Link the color to output
-        new_link = root_node.node_tree.links.new(col.outputs[0], outputSoc)
-        links_added.append((root_node, col.outputs[0], outputSoc))
-        logging.debug(
-            f"Linking {col.outputs[0].name} to {outputSoc.name}({outputSoc.bl_idname}): {new_link}"
-        )
-
-    # After setting up all materials, bake if applicable
+    # Perform the EMIT bake if anything required it
     if should_bake:
         bake_pass(obj, dest, img_size, bake_type, export_usd, export_name)
 
-    # After baking, undo the temporary changes to the scene graph
-    for n, from_soc, to_soc in links_added:
-        logging.debug(
-            f"Removing added link:\t{n.name}: {from_soc.name} => {to_soc.name}"
-        )
-        for l in n.node_tree.links:
-            if l.from_socket == from_soc and l.to_socket == to_soc:
-                n.node_tree.links.remove(l)
-                logging.debug(
-                    f"Removed link:\t{n.name}: {from_soc.name} => {to_soc.name}"
-                )
+    # Cleanup: remove temporary links and nodes; restore original Principled links
+    for owner, from_soc, to_soc in links_added:
+        try:
+            # Remove only the specific link we created
+            for l in list(owner.node_tree.links):
+                if l.from_socket == from_soc and l.to_socket == to_soc:
+                    owner.node_tree.links.remove(l)
+        except Exception:
+            pass
 
-    for n, from_soc, to_soc in links_removed:
-        logging.debug(f"Adding back link:\t{n.name}: {from_soc.name} => {to_soc.name}")
-        n.node_tree.links.new(from_soc, to_soc)
+    for owner, node in temp_nodes:
+        try:
+            owner.node_tree.nodes.remove(node)
+        except Exception:
+            pass
+
+    for owner, from_soc, to_soc in links_removed:
+        try:
+            owner.node_tree.links.new(from_soc, to_soc)
+        except Exception:
+            pass
 
 
 def remove_params(mat, node_tree):

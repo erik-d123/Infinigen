@@ -19,18 +19,16 @@ from lidar.lidar_generator import process_frame
 from tests.lidar.conftest import make_camera, make_plane_with_material
 
 
-def test_process_frame_writes_outputs_with_bakes(tmp_path, bake_scene):
+def test_process_frame_writes_outputs(tmp_path):
     """End‑to‑end per‑frame run writes PLY, camview, and calibration JSON."""
     _ = make_plane_with_material(size=5.0, location=(0, 0, 0))
     cam = make_camera(location=(0, 0, 3))
     scene = bpy.context.scene
 
-    texdir = bake_scene(res=64)
     out_dir = tmp_path / "lidar"
     out_dir.mkdir(parents=True, exist_ok=True)
     cfg = LidarConfig(preset="VLP-16")
     cfg.auto_expose = False
-    cfg.export_bake_dir = str(texdir)
     process_frame(scene, cam, cfg, out_dir, frame=1)
 
     # PLY exists

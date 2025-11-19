@@ -199,14 +199,12 @@ if [[ "$RUN_SMOKE" == "true" ]]; then
     -g singleroom.gin \
     -p compose_indoors.terrain_enabled=False compose_indoors.restrict_single_supported_roomtype=True
 
-  bash scripts/bake_export_textures.sh "$OUT/coarse" "$OUT/export" 1024 || true
-
   python -m infinigen.launch_blender -m lidar.lidar_generator -- \
     "$OUT/coarse/scene.blend" \
     --output_dir "$OUT/lidar" \
     --frames 1-3 \
     --camera Camera \
     --preset VLP-16 \
-    --export-bake-dir "$OUT/export/textures" || die "LiDAR smoke failed"
+    || die "LiDAR smoke failed"
   log "Smoke test done. Outputs at: $OUT"
 fi

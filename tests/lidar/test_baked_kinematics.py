@@ -1,4 +1,4 @@
-"""LiDAR baked kinematics tests.
+"""LiDAR kinematics tests (Principled sampling).
 
 Checks that incidence angle and distance affect intensity/range as expected and
 that simple animation across frames updates outputs consistently.
@@ -15,8 +15,7 @@ except Exception:  # pragma: no cover
     bpy = None
     pytest.skip("Blender required", allow_module_level=True)
 
-from lidar.lidar_config import LidarConfig
-from lidar.lidar_raycast import perform_raycasting
+from infinigen.lidar.lidar_engine import LidarConfig, perform_raycasting
 from tests.lidar.conftest import make_camera, make_plane_with_material
 
 
@@ -29,7 +28,7 @@ def _one_ray():
     return origins, dirs, rings, az
 
 
-def test_tilt_and_distance(bake_scene):
+def test_tilt_and_distance():
     """Tilting reduces intensity; increasing distance increases range and dims."""
     plane, _ = make_plane_with_material(
         size=4.0, location=(0, 0, 0), base_color=(0.7, 0.7, 0.7, 1.0), roughness=0.3
@@ -37,10 +36,8 @@ def test_tilt_and_distance(bake_scene):
     _ = make_camera(location=(0, 0, 3))
     scene = bpy.context.scene
     deps = bpy.context.evaluated_depsgraph_get()
-    tex = bake_scene(res=64)
     cfg = LidarConfig()
     cfg.auto_expose = False
-    cfg.export_bake_dir = str(tex)
     O, D, R, A = _one_ray()
 
     res0 = perform_raycasting(scene, deps, O, D, R, A, cfg)
@@ -63,16 +60,14 @@ def test_tilt_and_distance(bake_scene):
         assert int(res2["intensity"][0]) <= I0
 
 
-def test_animation_across_frames(bake_scene):
+def test_animation_across_frames():
     """Changing geometry across frames changes ranges and intensities coherently."""
     plane, _ = make_plane_with_material(size=5.0, location=(0, 0, 0))
     _ = make_camera(location=(0, 0, 3))
     scene = bpy.context.scene
     deps = bpy.context.evaluated_depsgraph_get()
-    tex = bake_scene(res=64)
     cfg = LidarConfig()
     cfg.auto_expose = False
-    cfg.export_bake_dir = str(tex)
 
     O, D, R, A = _one_ray()
     scene.frame_set(1)

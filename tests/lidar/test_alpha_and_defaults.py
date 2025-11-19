@@ -1,8 +1,4 @@
-"""LiDAR alpha semantics with baked coverage tests.
-
-Covers coverage-from-bake behavior (DIFFUSE alpha) and per‑material alpha
-threshold override for CLIP semantics via sidecars.
-"""
+"""LiDAR alpha semantics with Principled coverage tests."""
 
 import numpy as np
 import pytest
@@ -28,8 +24,8 @@ def _one_ray():
     return origins, dirs, rings, az
 
 
-def test_coverage_from_bake_scales_intensity(bake_scene):
-    """DIFFUSE alpha (coverage) from bakes should scale energy (BLEND semantics)."""
+def test_coverage_from_alpha_socket_scales_intensity():
+    """Principled Alpha (coverage) should scale energy under BLEND semantics."""
     plane, mat = make_plane_with_material(
         size=3.0, location=(0, 0, 0), base_color=(0.8, 0.8, 0.8, 1.0)
     )
@@ -49,25 +45,21 @@ def test_coverage_from_bake_scales_intensity(bake_scene):
     O, D, R, A = _one_ray()
 
     # Baseline with alpha = 1.0
-    tex1 = bake_scene(res=64)
     cfg = LidarConfig()
     cfg.auto_expose = False
-    cfg.export_bake_dir = str(tex1)
     res_full = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert res_full["intensity"].size == 1
     I_full = int(res_full["intensity"][0])
 
-    # Lower alpha and re-bake → lower intensity under BLEND
+    # Lower alpha → lower intensity under BLEND
     _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.25))
-    tex2 = bake_scene(res=64)
-    cfg.export_bake_dir = str(tex2)
     res_low = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert res_low["intensity"].size == 1
     I_low = int(res_low["intensity"][0])
     assert I_low <= I_full and I_low > 0
 
 
-def test_alpha_threshold_override_for_clip(bake_scene):
+def test_alpha_threshold_override_for_clip():
     """Material alpha_threshold controls CLIP culling behavior around coverage."""
     plane, mat = make_plane_with_material(
         size=3.0, location=(0, 0, 0), base_color=(0.8, 0.8, 0.8, 1.0)
@@ -80,11 +72,8 @@ def test_alpha_threshold_override_for_clip(bake_scene):
     _ = make_camera(location=(0, 0, 3))
     scene = bpy.context.scene
     deps = bpy.context.evaluated_depsgraph_get()
-    tex = bake_scene(res=64)
     cfg = LidarConfig()
     cfg.auto_expose = False
-    cfg.export_bake_dir = str(tex)
-    # Coverage is taken from DIFFUSE alpha; no runtime fallback exists
 
     O, D, R, A = _one_ray()
     # Verify that the material alpha_clip seen by the LiDAR extractor matches our override.
@@ -107,8 +96,6 @@ def test_alpha_threshold_override_for_clip(bake_scene):
 
     # Now set Alpha > threshold and re‑bake -> returns should be present
     _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.9))
-    tex2 = bake_scene(res=64)
-    cfg.export_bake_dir = str(tex2)
     res_keep = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert res_keep["intensity"].size >= 1
     if res_clip["intensity"].size == 0:

@@ -1,4 +1,4 @@
-"""LiDAR baked transmission tests.
+"""LiDAR transmission tests with Principled sampling.
 
 Ensures transmissive surfaces reduce near‑surface reflectivity and can produce
 an optional pass‑through secondary at a farther range, consistent with the
@@ -27,7 +27,7 @@ def _one_ray():
     return origins, dirs, rings, az
 
 
-def test_transmission_reduces_reflectivity_and_adds_secondary(bake_scene, lidar_cfg):
+def test_transmission_reduces_reflectivity_and_adds_secondary(lidar_cfg):
     """Transmissive surface dims the near return and may add a farther secondary."""
     # Opaque wall at z=0, transmissive plane at z=1.5
     wall, wall_mat = make_plane_with_material(
@@ -50,9 +50,7 @@ def test_transmission_reduces_reflectivity_and_adds_secondary(bake_scene, lidar_
     scene = bpy.context.scene
     deps = bpy.context.evaluated_depsgraph_get()
 
-    texdir = bake_scene(res=64)
     cfg = lidar_cfg
-    cfg.export_bake_dir = str(texdir)
     cfg.enable_secondary = True
     bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
@@ -66,8 +64,6 @@ def test_transmission_reduces_reflectivity_and_adds_secondary(bake_scene, lidar_
 
     # Make glass opaque and re-bake: reflectivity should increase for the nearer hit
     _set_principled(glass_mat, transmission=0.0)
-    texdir2 = bake_scene(res=64)
-    cfg.export_bake_dir = str(texdir2)
     bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
     res_op = perform_raycasting(scene, deps, O, D, R, A, cfg)

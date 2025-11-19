@@ -1,3 +1,6 @@
+# Copyright (C) 2024, Princeton University.
+# This source code is licensed under the BSD 3-Clause license found in the LICENSE file in the root directory of this source tree.
+
 """Lightweight viewer for LiDAR PLY outputs.
 
 Loads point clouds with optional attributes and displays them in Open3D with
@@ -357,20 +360,10 @@ def view_dir(out_dir: str, color: str = "intensity", frame: Optional[int] = None
 
     # Key callbacks
     vis.register_key_callback(ord("N"), lambda v: reload_geometry(idx + 1, mode))
-    vis.register_key_callback(ord("P"), lambda v: reload_geometry(idx - 1, mode))
+    modes = ["intensity", "intensity_heat", "reflectivity", "ring"]
     vis.register_key_callback(
         ord("C"),
-        lambda v: reload_geometry(
-            idx,
-            {m for m in []}
-            or ["intensity", "intensity_heat", "reflectivity", "ring"][
-                (
-                    ["intensity", "intensity_heat", "reflectivity", "ring"].index(mode)
-                    + 1
-                )
-                % 4
-            ],
-        ),
+        lambda v: reload_geometry(idx, modes[(modes.index(mode) + 1) % len(modes)]),
     )
     vis.register_key_callback(ord("Q"), lambda v: vis.close())
 

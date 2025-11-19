@@ -1,9 +1,4 @@
-"""LiDAR baked material tests.
-
-Verifies that per‑hit material properties are read from exporter bakes, that
-albedo changes require re‑bake to affect outputs, and that alpha semantics are
-respected (BLEND scales; CLIP culls).
-"""
+"""LiDAR material tests using Principled sampling."""
 
 import numpy as np
 import pytest
@@ -29,8 +24,8 @@ def _one_ray():
     return origins, dirs, rings, az
 
 
-def test_albedo_change_requires_rebake(bake_scene):
-    """Changing albedo affects reflectivity only after re‑baking textures."""
+def test_albedo_change_updates_reflectivity():
+    """Changing Principled albedo affects reflectivity immediately."""
     plane, mat = make_plane_with_material(
         size=2.0, location=(0, 0, 0), base_color=(0.2, 0.2, 0.2, 1.0)
     )
@@ -38,27 +33,21 @@ def test_albedo_change_requires_rebake(bake_scene):
     scene = bpy.context.scene
     deps = bpy.context.evaluated_depsgraph_get()
 
-    tex1 = bake_scene(res=64)
     cfg = LidarConfig()
     cfg.auto_expose = False
-    cfg.export_bake_dir = str(tex1)
     O, D, R, A = _one_ray()
     res1 = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert res1["reflectivity"].size == 1
     refl1 = float(res1["reflectivity"][0])
 
-    # Brighten and re-bake
+    # Brighten
     _set_principled(mat, base_color=(0.9, 0.9, 0.9, 1.0))
-    tex2 = bake_scene(res=64)
-    cfg2 = LidarConfig()
-    cfg2.auto_expose = False
-    cfg2.export_bake_dir = str(tex2)
-    res2 = perform_raycasting(scene, deps, O, D, R, A, cfg2)
+    res2 = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert float(res2["reflectivity"][0]) >= refl1
 
 
-def test_baked_property_extraction(bake_scene):
-    """Sampler returns baked BaseColor/Roughness/Metallic/Transmission at hits."""
+def test_principled_property_extraction():
+    """Sampler returns Principled BaseColor/Roughness/Metallic/Transmission per hit."""
     plane, mat = make_plane_with_material(
         size=2.0,
         location=(0, 0, 0),
@@ -69,9 +58,7 @@ def test_baked_property_extraction(bake_scene):
     _ = make_camera(location=(0, 0, 3))
     scene = bpy.context.scene
     deps = bpy.context.evaluated_depsgraph_get()
-    tex = bake_scene(res=64)
     cfg = LidarConfig()
-    cfg.export_bake_dir = str(tex)
     # Hit to get polygon index
     hit, loc, nrm, face_index, obj, _ = scene.ray_cast(
         deps, (0, 0, 3), (0, 0, -1), distance=10.0
@@ -88,7 +75,7 @@ def test_baked_property_extraction(bake_scene):
     )
 
 
-def test_alpha_blend_and_clip(bake_scene):
+def test_alpha_blend_and_clip():
     """BLEND scales energy by coverage; CLIP below threshold removes returns."""
     plane, mat = make_plane_with_material(
         size=2.0, location=(0, 0, 0), base_color=(0.8, 0.8, 0.8, 1.0)
@@ -101,17 +88,13 @@ def test_alpha_blend_and_clip(bake_scene):
     # BLEND 0.5
     mat.blend_method = "BLEND"
     _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.5))
-    tex = bake_scene(res=64)
     cfg = LidarConfig()
     cfg.auto_expose = False
-    cfg.export_bake_dir = str(tex)
     res_blend = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert res_blend["intensity"].size >= 1
 
     # CLIP alpha below threshold → cull
     mat.blend_method = "CLIP"
     _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.25))
-    tex2 = bake_scene(res=64)
-    cfg.export_bake_dir = str(tex2)
     res_clip = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert res_clip["intensity"].size == 0

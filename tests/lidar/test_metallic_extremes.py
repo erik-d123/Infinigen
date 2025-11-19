@@ -28,7 +28,7 @@ def _one_ray():
     return origins, dirs, rings, az
 
 
-def test_metallic_vs_dielectric_reflectivity(bake_scene):
+def test_metallic_vs_dielectric_reflectivity():
     """Metallic (m=1, low roughness) should be more reflective than dielectric."""
     plane, mat = make_plane_with_material(
         size=3.0,
@@ -43,18 +43,14 @@ def test_metallic_vs_dielectric_reflectivity(bake_scene):
     O, D, R, A = _one_ray()
 
     # Dielectric bake
-    tex_die = bake_scene(res=64)
     cfg = LidarConfig()
     cfg.auto_expose = False
-    cfg.export_bake_dir = str(tex_die)
     res_die = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert res_die["reflectivity"].size == 1
     R_die = float(res_die["reflectivity"][0])
 
     # Switch to metallic and re‑bake
     _set_principled(mat, metallic=1.0, roughness=0.05)
-    tex_met = bake_scene(res=64)
-    cfg.export_bake_dir = str(tex_met)
     res_met = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert res_met["reflectivity"].size == 1
     R_met = float(res_met["reflectivity"][0])
