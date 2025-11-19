@@ -26,6 +26,7 @@ PARTITION=""
 OUT_ROOT=""
 NAME="lidar_rrt"
 REPO_DIR="$(pwd)"
+OVERWRITE="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     --out) OUT_ROOT="$2"; shift 2;;
     --name) NAME="$2"; shift 2;;
     --repo) REPO_DIR="$2"; shift 2;;
+    --overwrite) OVERWRITE="true"; shift 1;;
     -h|--help) sed -n '1,120p' "$0"; exit 0;;
     *) echo "Unknown option: $1" >&2; exit 1;;
   esac
@@ -50,10 +52,8 @@ fi
 # Default OUT_ROOT to scratch
 if [[ -z "$OUT_ROOT" ]]; then
   TS="$(date +"%Y%m%d_%H%M%S")"
-  OUT_ROOT="/scratch/${USER}/infinigen_runs/${NAME}_${TS}"
+OUT_ROOT="/scratch/${USER}/infinigen_runs/${NAME}_${TS}"
 fi
-
-mkdir -p "$OUT_ROOT"
 
 echo "[run_indoor_lidar_scratch] Repo:    $REPO_DIR"
 echo "[run_indoor_lidar_scratch] Out:     $OUT_ROOT"
@@ -90,6 +90,10 @@ if [[ -n "$SEED" ]]; then
   CMD+=(--specific_seed "$SEED")
 fi
 
+if [[ "$OVERWRITE" == "true" ]]; then
+  CMD+=(--overwrite)
+fi
+
 (
   cd "$REPO_DIR"
   echo "[run_indoor_lidar_scratch] Submitting pipeline via Slurm (manage_jobs will dispatch tasks)..."
@@ -97,4 +101,3 @@ fi
 )
 
 echo "[run_indoor_lidar_scratch] Submitted. Outputs under: $OUT_ROOT"
-
