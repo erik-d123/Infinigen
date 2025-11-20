@@ -58,7 +58,7 @@ def get_cmd(
     if process_niceness is not None:
         cmd += f"nice -n {process_niceness} "
 
-    cmd += f"{sys.executable} "
+    cmd += f"{sys.executable} -u "
 
     if interactive_blender:
         cmd += "-m infinigen.launch_blender "
