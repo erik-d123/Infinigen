@@ -47,6 +47,9 @@ from infinigen.core.util.test_utils import (
 )
 from infinigen.terrain import Terrain
 from infinigen.tools.convert_displacement import convert_shader_displacement
+from infinigen_examples import (
+    generate_nature,  # noqa: F401 # needed for nature gin configs to be loaded
+)
 from infinigen_examples.constraints import home as home_constraints
 from infinigen_examples.constraints import util as cu
 from infinigen_examples.util.generate_indoors_util import (
@@ -55,10 +58,6 @@ from infinigen_examples.util.generate_indoors_util import (
     hide_other_rooms,
     place_cam_overhead,
     restrict_solving,
-)
-
-from . import (
-    generate_nature,  # noqa: F401 # needed for nature gin configs to be loaded
 )
 
 logger = logging.getLogger(__name__)
