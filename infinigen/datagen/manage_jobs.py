@@ -413,9 +413,7 @@ def run_task(queue_func, scene_folder, scene_dict, taskname, dryrun=False):
         name=stage_scene_name,
         taskname=taskname,
     )
-    logger.info(
-        f"Submitted {taskname} for {scene_dict['seed']}: Job ID {job_obj.job_id}"
-    )
+    print(f"Submitted {taskname} for {scene_dict['seed']}: Job ID {job_obj.job_id}")
     scene_dict[f"{taskname}_job_obj"] = job_obj
     scene_dict[f"{taskname}_output_folder"] = output_folder
     scene_dict[f"{taskname}_submitted"] = 1  # marked as submitted
