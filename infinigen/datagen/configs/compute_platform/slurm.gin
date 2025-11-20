@@ -17,8 +17,14 @@ renderbackup/queue_combined.mem_gb = 24
 queue_coarse.mem_gb = 24
 queue_coarse.cpus = 4
 queue_coarse.hours = 48
-queue_coarse.submit_cmd = @coarse/slurm_submit_cmd
+queue_coarse.submit_cmd = @slurm_submit_cmd
 queue_coarse.exclude_gpus = ['a6000', 'rtx_3090']
+
+# LiDAR
+queue_lidar.submit_cmd = @slurm_submit_cmd
+queue_lidar.mem_gb = 24
+queue_lidar.cpus = 4
+queue_lidar.hours = 24
 
 # Fine terrain
 queue_fine_terrain.mem_gb = 24

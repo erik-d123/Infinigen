@@ -124,6 +124,7 @@ def slurm_submit_cmd(
     if submitit is None:
         raise ValueError("submitit is required for slurm_submit_cmd")
 
+    (folder / "logs").mkdir(parents=True, exist_ok=True)
     executor = submitit.AutoExecutor(folder=(folder / "logs"))
     executor.update_parameters(
         mem_gb=mem_gb,
