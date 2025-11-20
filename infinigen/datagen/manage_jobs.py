@@ -349,13 +349,17 @@ def update_symlink(scene_folder, scenes):
         if not std_out.exists():
             std_out.touch()
 
+        std_err = std_out.with_suffix(".err")
+        if not std_err.exists():
+            std_err.touch()
+
         if os.path.islink(to):
             os.unlink(to)
             os.unlink(scene_folder / "logs" / f"{new_name}.err")
 
         os.symlink(std_out.resolve(), to)
         os.symlink(
-            std_out.with_suffix(".err").resolve(),
+            std_err.resolve(),
             scene_folder / "logs" / f"{new_name}.err",
         )
 
@@ -408,6 +412,9 @@ def run_task(queue_func, scene_folder, scene_dict, taskname, dryrun=False):
         folder=scene_folder,
         name=stage_scene_name,
         taskname=taskname,
+    )
+    logger.info(
+        f"Submitted {taskname} for {scene_dict['seed']}: Job ID {job_obj.job_id}"
     )
     scene_dict[f"{taskname}_job_obj"] = job_obj
     scene_dict[f"{taskname}_output_folder"] = output_folder
