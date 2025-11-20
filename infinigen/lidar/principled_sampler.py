@@ -273,7 +273,39 @@ class PrincipledSampler:
         if context is None:
             sampled = self._sample_non_principled(mat, uv, obj)
             if sampled is None:
-                raise PrincipledSampleError(f"No Principled BSDF on {mat.name}")
+                # Fallback instead of crashing
+
+                # Heuristic: If it's a mirror, make it shiny
+                if "mirror" in mat.name.lower():
+                    print(
+                        f"[PrincipledSampler] WARNING: No supported BSDF on {mat.name} (Obj: {obj.name}). Using shiny fallback (Mirror heuristic)."
+                    )
+                    return {
+                        "base_color": (0.8, 0.8, 0.8),  # Slightly grey to reflect
+                        "metallic": 1.0,
+                        "roughness": 0.0,
+                        "transmission": 0.0,
+                        "transmission_roughness": 0.0,
+                        "coverage": 1.0,
+                        "alpha_mode": "OPAQUE",
+                        "alpha_clip": 0.5,
+                        "specular": 1.0,
+                    }
+
+                print(
+                    f"[PrincipledSampler] WARNING: No supported BSDF on {mat.name} (Obj: {obj.name}). Using default black."
+                )
+                return {
+                    "base_color": (0.0, 0.0, 0.0),
+                    "metallic": 0.0,
+                    "roughness": 1.0,
+                    "transmission": 0.0,
+                    "transmission_roughness": 0.0,
+                    "coverage": 1.0,
+                    "alpha_mode": "OPAQUE",
+                    "alpha_clip": 0.5,
+                    "specular": 0.0,
+                }
             return sampled
 
         base_rgba = self._sample_color(context, "Base Color", uv, obj)
@@ -409,6 +441,26 @@ class PrincipledSampler:
         if transparent_ctx is not None:
             return self._sample_transparent(transparent_ctx, mat, uv, obj)
 
+        anisotropic_ctx = self._find_node_context(mat, {"BSDF_ANISOTROPIC"})
+        if anisotropic_ctx is not None:
+            return self._sample_anisotropic(anisotropic_ctx, mat, uv, obj)
+
+        refraction_ctx = self._find_node_context(mat, {"BSDF_REFRACTION"})
+        if refraction_ctx is not None:
+            return self._sample_refraction(refraction_ctx, mat, uv, obj)
+
+        translucent_ctx = self._find_node_context(mat, {"BSDF_TRANSLUCENT"})
+        if translucent_ctx is not None:
+            return self._sample_translucent(translucent_ctx, mat, uv, obj)
+
+        velvet_ctx = self._find_node_context(mat, {"BSDF_VELVET"})
+        if velvet_ctx is not None:
+            return self._sample_velvet(velvet_ctx, mat, uv, obj)
+
+        emission_ctx = self._find_node_context(mat, {"SHADER_EMISSION"})
+        if emission_ctx is not None:
+            return self._sample_emission(emission_ctx, mat, uv, obj)
+
         return None
 
     def _alpha_settings(self, mat) -> Tuple[str, float]:
@@ -420,6 +472,25 @@ class PrincipledSampler:
         return alpha_mode, alpha_clip
 
     def _sample_glass(self, ctx, mat, uv, obj) -> Dict:
+        color = self._sample_color(ctx, "Color", uv, obj)
+        rough = self._sample_scalar(ctx, "Roughness", uv, obj, default=0.0)
+        ior = self._sample_scalar(ctx, "IOR", uv, obj, default=1.45)
+        alpha_mode, alpha_clip = self._alpha_settings(mat)
+        return {
+            "base_color": tuple(float(c) for c in color[:3]),
+            "metallic": 0.0,
+            "roughness": float(rough),
+            "transmission": 1.0,
+            "transmission_roughness": float(rough),
+            "coverage": 1.0,
+            "alpha_mode": alpha_mode,
+            "alpha_clip": alpha_clip,
+            "ior": float(ior),
+        }
+
+    def _sample_refraction(self, ctx, mat, uv, obj) -> Dict:
+        # Treat as glass but with no reflection component?
+        # For LiDAR, treating as transmission is correct.
         color = self._sample_color(ctx, "Color", uv, obj)
         rough = self._sample_scalar(ctx, "Roughness", uv, obj, default=0.0)
         ior = self._sample_scalar(ctx, "IOR", uv, obj, default=1.45)
@@ -452,7 +523,60 @@ class PrincipledSampler:
             "specular": 0.5,
         }
 
+    def _sample_translucent(self, ctx, mat, uv, obj) -> Dict:
+        # Translucent is like diffuse but light passes through.
+        # For LiDAR (reflection), it acts mostly like diffuse.
+        color = self._sample_color(ctx, "Color", uv, obj)
+        alpha_mode, alpha_clip = self._alpha_settings(mat)
+        return {
+            "base_color": tuple(float(c) for c in color[:3]),
+            "metallic": 0.0,
+            "roughness": 0.5,  # Default rough
+            "transmission": 0.0,  # Not transparent in the glass sense
+            "transmission_roughness": 0.0,
+            "coverage": 1.0,
+            "alpha_mode": alpha_mode,
+            "alpha_clip": alpha_clip,
+            "specular": 0.0,
+        }
+
+    def _sample_velvet(self, ctx, mat, uv, obj) -> Dict:
+        # Velvet is diffuse-like with sheen.
+        color = self._sample_color(ctx, "Color", uv, obj)
+        rough = self._sample_scalar(
+            ctx, "Sigma", uv, obj, default=0.5
+        )  # Sigma maps roughly to roughness
+        alpha_mode, alpha_clip = self._alpha_settings(mat)
+        return {
+            "base_color": tuple(float(c) for c in color[:3]),
+            "metallic": 0.0,
+            "roughness": float(rough),
+            "transmission": 0.0,
+            "transmission_roughness": 0.0,
+            "coverage": 1.0,
+            "alpha_mode": alpha_mode,
+            "alpha_clip": alpha_clip,
+            "specular": 0.5,
+        }
+
     def _sample_glossy(self, ctx, mat, uv, obj) -> Dict:
+        color = self._sample_color(ctx, "Color", uv, obj)
+        rough = self._sample_scalar(ctx, "Roughness", uv, obj, default=0.05)
+        alpha_mode, alpha_clip = self._alpha_settings(mat)
+        return {
+            "base_color": tuple(float(c) for c in color[:3]),
+            "metallic": 1.0,
+            "roughness": float(rough),
+            "transmission": 0.0,
+            "transmission_roughness": 0.0,
+            "coverage": 1.0,
+            "alpha_mode": alpha_mode,
+            "alpha_clip": alpha_clip,
+            "specular": 1.0,
+        }
+
+    def _sample_anisotropic(self, ctx, mat, uv, obj) -> Dict:
+        # Anisotropic is glossy with directionality. Treat as glossy.
         color = self._sample_color(ctx, "Color", uv, obj)
         rough = self._sample_scalar(ctx, "Roughness", uv, obj, default=0.05)
         alpha_mode, alpha_clip = self._alpha_settings(mat)
@@ -481,6 +605,22 @@ class PrincipledSampler:
             "alpha_mode": alpha_mode,
             "alpha_clip": alpha_clip,
             "specular": 0.5,
+        }
+
+    def _sample_emission(self, ctx, mat, uv, obj) -> Dict:
+        # Emission is a light source. Reflectivity is 0.
+        color = self._sample_color(ctx, "Color", uv, obj)
+        alpha_mode, alpha_clip = self._alpha_settings(mat)
+        return {
+            "base_color": tuple(float(c) for c in color[:3]),
+            "metallic": 0.0,
+            "roughness": 1.0,
+            "transmission": 0.0,
+            "transmission_roughness": 0.0,
+            "coverage": 1.0,
+            "alpha_mode": alpha_mode,
+            "alpha_clip": alpha_clip,
+            "specular": 0.0,
         }
 
     def _sample_color(
