@@ -117,9 +117,12 @@ def clear_sampler_cache():
     """Clear the PrincipledSampler bake cache before each test to prevent cross-test pollution."""
     from infinigen.lidar.principled_sampler import PrincipledSampler
 
-    sampler = PrincipledSampler.get()
-    if sampler:
-        sampler.bake_cache.clear()
+    # Clear the sampler cache to prevent pollution
+    if hasattr(PrincipledSampler, "_inst") and PrincipledSampler._inst:
+        PrincipledSampler._inst.bake_cache.clear()
+        PrincipledSampler._inst.image_cache.clear()
+        PrincipledSampler._inst.mesh_cache.clear()
+        PrincipledSampler._inst.mesh_epoch = None
 
     # Also clean the scene to prevent object name collisions
     if bpy:

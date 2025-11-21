@@ -550,6 +550,10 @@ def extract_material_properties(
     else:
         raise ValueError("Principled material missing IOR or Specular value")
 
+    # Pass alpha_linked if present
+    if "alpha_linked" in sampled:
+        props["alpha_linked"] = sampled["alpha_linked"]
+
     props["is_glass_hint"] = bool(
         float(props.get("transmission", 0.0)) > 0.5 or float(props["opacity"]) < 0.5
     )
@@ -756,6 +760,11 @@ def perform_raycasting(
     """
     assert bpy is not None, "perform_raycasting requires Blender (bpy)"
 
+    # Force view layer update to ensure evaluated objects (CoW) are up-to-date
+    # This fixes tests that modify materials between raycasts without explicit updates.
+    if bpy.context.view_layer:
+        bpy.context.view_layer.update()
+
     min_r = float(getattr(cfg, "min_range", 0.05))
     max_r = float(getattr(cfg, "max_range", 100.0))
 
@@ -843,11 +852,12 @@ def perform_raycasting(
         # - BLEND/HASHED: never cull by threshold; scale by coverage
         alpha_mode = str(props.get("alpha_mode", "BLEND")).upper()
         alpha_clip = float(props.get("alpha_clip", 0.5))
-        if alpha_mode == "CLIP":
+
+        if alpha_mode in ("CLIP", "HASHED"):
             if alpha_cov < alpha_clip:
                 continue
             alpha_apply = 1.0
-        elif alpha_mode in ("BLEND", "HASHED"):
+        elif alpha_mode == "BLEND":
             # Only apply coverage scaling if the Alpha socket is actually linked.
             alpha_linked = bool(props.get("alpha_linked", False))
             alpha_apply = alpha_cov if alpha_linked else 1.0

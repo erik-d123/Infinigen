@@ -815,38 +815,100 @@ class PrincipledSampler:
             alpha=True,
         )
 
+        # Optimization: If socket is UNLINKED, we don't need to bake!
+        # We can just create the array directly from the default value.
+        if not (socket.is_linked and socket.links):
+            default = getattr(socket, "default_value", None)
+            print(
+                f"DEBUG: Socket {socket_name} is UNLINKED. Default: {default}. Skipping Bake."
+            )
+            tup = _to_rgba(default)
+
+            # Create array filled with this value
+            arr = np.full(
+                (self.bake_resolution, self.bake_resolution, 4), tup, dtype=np.float32
+            )
+
+            # We still need to return a _BakedInput
+            # We don't need the blender image anymore
+            with contextlib.suppress(Exception):
+                bpy.data.images.remove(img, do_unlink=True)
+
+            return _BakedInput(
+                array=arr, width=self.bake_resolution, height=self.bake_resolution
+            )
+
+        # Optimization: If socket is LINKED to an Image Texture, read it directly!
+        # This avoids "Circular dependency" and baking overhead.
+        if socket.is_linked and socket.links:
+            link = socket.links[0]
+            from_node = link.from_node
+            if from_node.type == "TEX_IMAGE" and from_node.image:
+                print(
+                    f"DEBUG: Socket {socket_name} is LINKED to Image {from_node.image.name}. Skipping Bake."
+                )
+                src_img = from_node.image
+                try:
+                    # Read pixels directly
+                    arr = np.array(src_img.pixels[:], dtype=np.float32).reshape(
+                        (src_img.size[1], src_img.size[0], 4)
+                    )
+
+                    # Cleanup the unused bake image
+                    with contextlib.suppress(Exception):
+                        bpy.data.images.remove(img, do_unlink=True)
+
+                    return _BakedInput(
+                        array=arr, width=src_img.size[0], height=src_img.size[1]
+                    )
+                except Exception as exc:
+                    print(
+                        f"WARNING: Failed to read image pixels directly: {exc}. Falling back to bake."
+                    )
+
         # Create texture node in the root tree so bake operator sees it
         tex_node = root_tree.nodes.new("ShaderNodeTexImage")
         tex_node.image = img
         tex_node.select = True
         root_tree.nodes.active = tex_node
 
-        # Emission node stays in the context tree (where the signal is)
-        emiss = nodes.new("ShaderNodeEmission")
-        emiss.inputs["Strength"].default_value = 1.0
-
         created_links = []
+        removed_links = []
         temp_nodes = []
 
-        if socket.is_linked and socket.links:
-            print(
-                f"DEBUG: Socket {socket_name} is LINKED to {socket.links[0].from_node.name}"
+        # Create emission node
+        emiss = nodes.new("ShaderNodeEmission")
+        temp_nodes.append(emiss)
+        emiss.inputs["Strength"].default_value = 1.0  # Ensure strength is 1.0
+
+        # Link emission to output
+        out_node = next((n for n in nodes if n.type == "OUTPUT_MATERIAL"), None)
+        if out_node is None:
+            out_node = nodes.new("ShaderNodeOutputMaterial")
+            temp_nodes.append(out_node)
+
+        # Store original link to restore later
+        original_surface_link = None
+        if out_node.inputs["Surface"].is_linked:
+            original_surface_link = out_node.inputs["Surface"].links[0]
+            removed_links.append(
+                (original_surface_link.from_socket, original_surface_link.to_socket)
             )
-            src = socket.links[0].from_socket
-            created_links.append(links.new(src, emiss.inputs["Color"]))
-        else:
-            default = getattr(socket, "default_value", None)
-            print(f"DEBUG: Socket {socket_name} is UNLINKED. Default: {default}")
-            rgb = nodes.new("ShaderNodeRGB")
-            temp_nodes.append(rgb)
-            tup = _to_rgba(default)
-            print(f"DEBUG: Converted default to RGBA: {tup}")
-            rgb.outputs[0].default_value = tup  # type: ignore[arg-type]
-            created_links.append(links.new(rgb.outputs[0], emiss.inputs["Color"]))
+
+        created_links.append(
+            links.new(emiss.outputs["Emission"], out_node.inputs["Surface"])
+        )
+
+        # Handle Input Connection (Linked case only now)
+        print(
+            f"DEBUG: Socket {socket_name} is LINKED to {socket.links[0].from_node.name}"
+        )
+        src = socket.links[0].from_socket
+        created_links.append(links.new(src, emiss.inputs["Color"]))
 
         # Disconnect Principled output links so emission can drive same sockets
-        removed_links = []
-        bsdf_output = principled.outputs[0] if principled.outputs else None
+        # This part needs to use context.node (the Principled BSDF)
+        bsdf_output = context.node.outputs[0] if context.node.outputs else None
         if bsdf_output and bsdf_output.links:
             for link in list(bsdf_output.links):
                 from_sock = link.from_socket
@@ -867,9 +929,13 @@ class PrincipledSampler:
             if fallback_target is not None:
                 created_links.append(links.new(emiss.outputs[0], fallback_target))
             else:
-                nodes.remove(emiss)
-                root_tree.nodes.remove(tex_node)
-                bpy.data.images.remove(img, do_unlink=True)
+                # If no output target, we can't bake. Clean up and return.
+                with contextlib.suppress(Exception):
+                    nodes.remove(emiss)
+                with contextlib.suppress(Exception):
+                    root_tree.nodes.remove(tex_node)
+                with contextlib.suppress(Exception):
+                    bpy.data.images.remove(img, do_unlink=True)
                 with contextlib.suppress(Exception):
                     scene.render.engine = prev_engine
                 return None
@@ -878,20 +944,35 @@ class PrincipledSampler:
             bpy.ops.object.select_all(action="DESELECT")
             obj.select_set(True)
             bpy.context.view_layer.objects.active = obj
+            obj.update_tag()
+            bpy.context.view_layer.update()
 
             # Ensure texture node is active and selected for baking
+            # We must do this AFTER selecting the object and updating view layer
             for n in root_tree.nodes:
                 n.select = False
             tex_node.select = True
             root_tree.nodes.active = tex_node
 
-            # Update view layer to ensure all links and nodes are synced
+            # Verify assignment
+            if root_tree.nodes.active != tex_node:
+                print("WARNING: Failed to set active node! Retrying...")
+                root_tree.nodes.active = tex_node
+
+            # Force update via mode switch
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+            # Update view layer AGAIN to ensure node selection is synced
             bpy.context.view_layer.update()
 
             print(f"DEBUG: Baking {socket_name} on {obj.name}...")
-            bpy.ops.object.bake(
-                type="EMIT", save_mode="INTERNAL", use_clear=True, margin=2
-            )
+
+            # Use temp_override to ensure context is correct
+            with bpy.context.temp_override(active_object=obj, selected_objects=[obj]):
+                bpy.ops.object.bake(
+                    type="EMIT", save_mode="INTERNAL", use_clear=True, margin=2
+                )
         except Exception as exc:
             print(f"DEBUG: Bake FAILED for {socket_name} on {obj.name}: {exc}")
             import traceback
@@ -904,6 +985,7 @@ class PrincipledSampler:
             arr = np.array(img.pixels[:], dtype=np.float32).reshape(
                 (img.size[1], img.size[0], 4)
             )
+            print(f"DEBUG: Baked Array Mean: {np.mean(arr)} Max: {np.max(arr)}")
             baked = _BakedInput(array=arr.copy(), width=img.size[0], height=img.size[1])
             err = None
         finally:
@@ -914,13 +996,14 @@ class PrincipledSampler:
             for from_soc, to_soc in removed_links:
                 with contextlib.suppress(Exception):
                     links.new(from_soc, to_soc)
-            with contextlib.suppress(Exception):
-                nodes.remove(emiss)
+            # Remove temp nodes
+            for n in temp_nodes:
+                with contextlib.suppress(Exception):
+                    nodes.remove(n)
+            # Remove texture node
             with contextlib.suppress(Exception):
                 root_tree.nodes.remove(tex_node)
-            for node in temp_nodes:
-                with contextlib.suppress(Exception):
-                    nodes.remove(node)
+
             with contextlib.suppress(Exception):
                 bpy.data.images.remove(img, do_unlink=True)
             with contextlib.suppress(Exception):

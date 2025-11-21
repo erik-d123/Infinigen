@@ -31,6 +31,9 @@ def test_coverage_from_alpha_socket_scales_intensity():
     plane, mat = make_plane_with_material(
         size=3.0, location=(0, 0, 0), base_color=(0.8, 0.8, 0.8, 1.0)
     )
+    # Enforce BLEND mode to avoid culling if default is HASHED/CLIP
+    mat.blend_method = "BLEND"
+
     _ = make_camera(location=(0, 0, 3))
     scene = bpy.context.scene
     # Remove any other meshes (e.g., factory cube) to ensure only the test plane is hit
@@ -55,6 +58,11 @@ def test_coverage_from_alpha_socket_scales_intensity():
 
     # Lower alpha → lower intensity under BLEND
     _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.25))
+
+    # FIX: Update depsgraph after material change
+    bpy.context.view_layer.update()
+    deps = bpy.context.evaluated_depsgraph_get()
+
     res_low = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert res_low["intensity"].size == 1
     I_low = int(res_low["intensity"][0])
@@ -72,8 +80,13 @@ def test_alpha_threshold_override_for_clip():
     # Set Principled Alpha < threshold
     _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.75))
     _ = make_camera(location=(0, 0, 3))
-    scene = bpy.context.scene
+
+    scene = bpy.context.scene  # FIX: Define scene
+
+    # FIX: Update depsgraph after material change
+    bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
+
     cfg = LidarConfig()
     cfg.auto_expose = False
 
@@ -98,6 +111,11 @@ def test_alpha_threshold_override_for_clip():
 
     # Now set Alpha > threshold and re‑bake -> returns should be present
     _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.9))
+
+    # FIX: Update depsgraph after material change
+    bpy.context.view_layer.update()
+    deps = bpy.context.evaluated_depsgraph_get()
+
     res_keep = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert res_keep["intensity"].size >= 1
     if res_clip["intensity"].size == 0:

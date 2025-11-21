@@ -44,6 +44,11 @@ def test_albedo_change_updates_reflectivity():
 
     # Brighten
     _set_principled(mat, base_color=(0.9, 0.9, 0.9, 1.0))
+
+    # FIX: Update depsgraph
+    bpy.context.view_layer.update()
+    deps = bpy.context.evaluated_depsgraph_get()
+
     res2 = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert float(res2["reflectivity"][0]) >= refl1
 
@@ -90,6 +95,11 @@ def test_alpha_blend_and_clip():
     # BLEND 0.5
     mat.blend_method = "BLEND"
     _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.5))
+
+    # FIX: Update
+    bpy.context.view_layer.update()
+    deps = bpy.context.evaluated_depsgraph_get()
+
     cfg = LidarConfig()
     cfg.auto_expose = False
     res_blend = perform_raycasting(scene, deps, O, D, R, A, cfg)
@@ -98,5 +108,10 @@ def test_alpha_blend_and_clip():
     # CLIP alpha below threshold → cull
     mat.blend_method = "CLIP"
     _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.25))
+
+    # FIX: Update
+    bpy.context.view_layer.update()
+    deps = bpy.context.evaluated_depsgraph_get()
+
     res_clip = perform_raycasting(scene, deps, O, D, R, A, cfg)
     assert res_clip["intensity"].size == 0
