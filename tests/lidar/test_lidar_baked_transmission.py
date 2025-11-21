@@ -14,7 +14,7 @@ except Exception:  # pragma: no cover
     bpy = None
     pytest.skip("Blender required", allow_module_level=True)
 
-from lidar.lidar_raycast import perform_raycasting
+from infinigen.lidar.lidar_engine import perform_raycasting
 from tests.lidar.conftest import _set_principled, make_camera, make_plane_with_material
 
 

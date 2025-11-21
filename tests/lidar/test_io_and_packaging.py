@@ -14,8 +14,8 @@ except Exception:  # pragma: no cover
     bpy = None
     pytest.skip("Blender required", allow_module_level=True)
 
-from lidar.lidar_config import LidarConfig
-from lidar.lidar_generator import process_frame
+from infinigen.lidar.lidar_engine import LidarConfig
+from infinigen.lidar.lidar_generator import process_frame
 from tests.lidar.conftest import make_camera, make_plane_with_material
 
 

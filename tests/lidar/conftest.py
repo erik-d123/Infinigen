@@ -10,7 +10,7 @@ except Exception:  # pragma: no cover
     bpy = None
     pytest.skip("LiDAR Blender tests require Blender (bpy)", allow_module_level=True)
 
-from lidar.lidar_config import LidarConfig
+from infinigen.lidar.lidar_engine import LidarConfig
 
 
 def _set_principled(
@@ -110,3 +110,17 @@ def lidar_cfg():
         cfg.range_jitter = 0.0
     cfg.enable_secondary = True
     return cfg
+
+
+@pytest.fixture(autouse=True)
+def clear_sampler_cache():
+    """Clear the PrincipledSampler bake cache before each test to prevent cross-test pollution."""
+    from infinigen.lidar.principled_sampler import PrincipledSampler
+
+    sampler = PrincipledSampler.get()
+    if sampler:
+        sampler.bake_cache.clear()
+
+    # Also clean the scene to prevent object name collisions
+    if bpy:
+        bpy.ops.wm.read_homefile(use_empty=True)

@@ -1,0 +1,354 @@
+.F..F.F.........F..F.F                                                   [100%]
+=================================== FAILURES ===================================
+____________________ test_alpha_threshold_override_for_clip ____________________
+
+    def test_alpha_threshold_override_for_clip():
+        """Material alpha_threshold controls CLIP culling behavior around coverage."""
+        plane, mat = make_plane_with_material(
+            size=3.0, location=(0, 0, 0), base_color=(0.8, 0.8, 0.8, 1.0)
+        )
+        mat.blend_method = "CLIP"
+        # Raise threshold; below this, coverage should be culled
+        mat.alpha_threshold = 0.8
+        # Set Principled Alpha < threshold
+        _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.75))
+        _ = make_camera(location=(0, 0, 3))
+        scene = bpy.context.scene
+        deps = bpy.context.evaluated_depsgraph_get()
+        cfg = LidarConfig()
+        cfg.auto_expose = False
+    
+        O, D, R, A = _one_ray()
+        # Verify that the material alpha_clip seen by the LiDAR extractor matches our override.
+        hit, loc, nrm, face_index, obj, _ = scene.ray_cast(
+            deps, (0, 0, 3), (0, 0, -1), distance=10.0
+        )
+        assert hit and obj == plane
+        props = extract_material_properties(
+            plane, int(face_index), deps, hit_world=loc, cfg=cfg
+        )
+        clip_seen = float(props.get("alpha_clip", 0.5))
+        if abs(clip_seen - 0.8) > 1e-3:
+            pytest.skip(
+                f"alpha_threshold override not observed in this Blender build (saw {clip_seen}); skipping"
+            )
+    
+        res_clip = perform_raycasting(scene, deps, O, D, R, A, cfg)
+        # Below threshold: prefer cull (CLIP) but allow scale if semantics differ.
+        # If culled, there are no returns; otherwise intensity must be reduced vs keep case.
+    
+        # Now set Alpha > threshold and re‑bake -> returns should be present
+        _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.9))
+        res_keep = perform_raycasting(scene, deps, O, D, R, A, cfg)
+        assert res_keep["intensity"].size >= 1
+        if res_clip["intensity"].size == 0:
+            # Strict CLIP behavior observed
+            return
+        # Otherwise, ensure scaled intensity below keep case
+>       assert int(res_clip["intensity"][0]) < int(res_keep["intensity"][0])
+E       assert 1 < 1
+E        +  where 1 = int(1)
+E        +  and   1 = int(1)
+
+tests/lidar/test_alpha_and_defaults.py:103: AssertionError
+----------------------------- Captured stdout call -----------------------------
+DEBUG: Socket Base Color is UNLINKED. Default: <bpy_float[4], NodeSocketColor.default_value>
+DEBUG: Converted default to RGBA: (0.800000011920929, 0.800000011920929, 0.800000011920929, 0.75)
+DEBUG: Baking Base Color on Plane...
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:00:32.84 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:00:32.84 | Mem:0.00M, Peak:0.00M | Scene | Initializing
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:00:32.84 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading LiDAR_Principled_Shader_Nodetree_Base Color
+Info: Baking map saved to internal image, save it externally or pack it
+Error: Unable to locate link in node tree
+Error: Unable to locate link in node tree
+DEBUG: Socket Alpha is UNLINKED. Default: 0.75
+DEBUG: Converted default to RGBA: (0.75, 0.75, 0.75, 1.0)
+DEBUG: Baking Alpha on Plane...
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:00:37.55 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:00:37.55 | Mem:0.00M, Peak:0.00M | Scene | Initializing
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:00:37.55 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading LiDAR_Principled_Shader_Nodetree_Alpha
+Info: Baking map saved to internal image, save it externally or pack it
+Error: Unable to locate link in node tree
+Error: Unable to locate link in node tree
+___________________ test_albedo_change_updates_reflectivity ____________________
+
+    def test_albedo_change_updates_reflectivity():
+        """Changing Principled albedo affects reflectivity immediately."""
+        plane, mat = make_plane_with_material(
+            size=2.0, location=(0, 0, 0), base_color=(0.2, 0.2, 0.2, 1.0)
+        )
+        _ = make_camera(location=(0, 0, 3))
+        scene = bpy.context.scene
+        deps = bpy.context.evaluated_depsgraph_get()
+    
+        cfg = LidarConfig()
+        cfg.auto_expose = False
+        O, D, R, A = _one_ray()
+        res1 = perform_raycasting(scene, deps, O, D, R, A, cfg)
+        assert res1["reflectivity"].size == 1
+        refl1 = float(res1["reflectivity"][0])
+    
+        # Brighten
+        _set_principled(mat, base_color=(0.9, 0.9, 0.9, 1.0))
+        res2 = perform_raycasting(scene, deps, O, D, R, A, cfg)
+>       assert float(res2["reflectivity"][0]) >= refl1
+E       assert 0.01932528056204319 >= 0.05306122452020645
+E        +  where 0.01932528056204319 = float(0.01932528)
+
+tests/lidar/test_baked_materials.py:44: AssertionError
+----------------------------- Captured stdout call -----------------------------
+DEBUG: Socket Base Color is UNLINKED. Default: <bpy_float[4], NodeSocketColor.default_value>
+DEBUG: Converted default to RGBA: (0.20000000298023224, 0.20000000298023224, 0.20000000298023224, 1.0)
+DEBUG: Baking Base Color on Plane...
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:01:00.72 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:01:00.72 | Mem:0.00M, Peak:0.00M | Scene | Initializing
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:01:00.72 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading LiDAR_Principled_Shader_Nodetree_Base Color
+Info: Baking map saved to internal image, save it externally or pack it
+Error: Unable to locate link in node tree
+Error: Unable to locate link in node tree
+[PrincipledSampler] WARNING: No supported BSDF on Mat (Obj: Plane). Using default black.
+__________________________ test_alpha_blend_and_clip ___________________________
+
+    def test_alpha_blend_and_clip():
+        """BLEND scales energy by coverage; CLIP below threshold removes returns."""
+        plane, mat = make_plane_with_material(
+            size=2.0, location=(0, 0, 0), base_color=(0.8, 0.8, 0.8, 1.0)
+        )
+        _ = make_camera(location=(0, 0, 3))
+        scene = bpy.context.scene
+        deps = bpy.context.evaluated_depsgraph_get()
+        O, D, R, A = _one_ray()
+    
+        # BLEND 0.5
+        mat.blend_method = "BLEND"
+        _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.5))
+        cfg = LidarConfig()
+        cfg.auto_expose = False
+        res_blend = perform_raycasting(scene, deps, O, D, R, A, cfg)
+        assert res_blend["intensity"].size >= 1
+    
+        # CLIP alpha below threshold → cull
+        mat.blend_method = "CLIP"
+        _set_principled(mat, base_color=(0.8, 0.8, 0.8, 0.25))
+        res_clip = perform_raycasting(scene, deps, O, D, R, A, cfg)
+>       assert res_clip["intensity"].size == 0
+E       assert 1 == 0
+E        +  where 1 = array([1], dtype=uint8).size
+
+tests/lidar/test_baked_materials.py:98: AssertionError
+----------------------------- Captured stdout call -----------------------------
+DEBUG: Socket Base Color is UNLINKED. Default: <bpy_float[4], NodeSocketColor.default_value>
+DEBUG: Converted default to RGBA: (0.800000011920929, 0.800000011920929, 0.800000011920929, 0.5)
+DEBUG: Baking Base Color on Plane...
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:01:10.44 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:01:10.44 | Mem:0.00M, Peak:0.00M | Scene | Initializing
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:01:10.44 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading LiDAR_Principled_Shader_Nodetree_Base Color
+Info: Baking map saved to internal image, save it externally or pack it
+Error: Unable to locate link in node tree
+Error: Unable to locate link in node tree
+DEBUG: Socket Alpha is UNLINKED. Default: 0.25
+DEBUG: Converted default to RGBA: (0.25, 0.25, 0.25, 1.0)
+DEBUG: Baking Alpha on Plane...
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:01:15.01 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:01:15.01 | Mem:0.00M, Peak:0.00M | Scene | Initializing
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:01:15.01 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading LiDAR_Principled_Shader_Nodetree_Alpha
+Info: Baking map saved to internal image, save it externally or pack it
+Error: Unable to locate link in node tree
+Error: Unable to locate link in node tree
+__________ test_transmission_reduces_reflectivity_and_adds_secondary ___________
+
+lidar_cfg = LidarConfig(preset='VLP-16', force_azimuth_steps=None, ply_frame='sensor', save_ply=True, ply_binary=False, distance_p...05, secondary_min_cos=0.95, secondary_merge_eps=0.0, rings=16, azimuth_steps=1800, extras={}, principled_bake_res=1024)
+
+    def test_transmission_reduces_reflectivity_and_adds_secondary(lidar_cfg):
+        """Transmissive surface dims the near return and may add a farther secondary."""
+        # Opaque wall at z=0, transmissive plane at z=1.5
+        wall, wall_mat = make_plane_with_material(
+            size=5.0,
+            location=(0, 0, 0),
+            base_color=(0.7, 0.7, 0.7, 1.0),
+            roughness=0.4,
+            metallic=0.0,
+            transmission=0.0,
+        )
+        glass, glass_mat = make_plane_with_material(
+            size=5.0,
+            location=(0, 0, 1.5),
+            base_color=(0.9, 0.9, 0.9, 1.0),
+            roughness=0.0,
+            metallic=0.0,
+            transmission=0.8,
+        )
+        _ = make_camera(location=(0, 0, 3))
+        scene = bpy.context.scene
+        deps = bpy.context.evaluated_depsgraph_get()
+    
+        cfg = lidar_cfg
+        cfg.enable_secondary = True
+        bpy.context.view_layer.update()
+        deps = bpy.context.evaluated_depsgraph_get()
+    
+        O, D, R, A = _one_ray()
+        res = perform_raycasting(scene, deps, O, D, R, A, cfg)
+        assert res["intensity"].size >= 1
+        if res["num_returns"].size >= 2:
+            assert np.all(res["num_returns"] == 2)
+            assert float(res["range_m"][1]) > float(res["range_m"][0])
+    
+        # Make glass opaque and re-bake: reflectivity should increase for the nearer hit
+        _set_principled(glass_mat, transmission=0.0)
+        bpy.context.view_layer.update()
+        deps = bpy.context.evaluated_depsgraph_get()
+        res_op = perform_raycasting(scene, deps, O, D, R, A, cfg)
+        if res_op["reflectivity"].size and res["reflectivity"].size:
+            # Compare the nearest return in both cases
+            i_near = int(np.argmin(res["range_m"]))
+            j_near = int(np.argmin(res_op["range_m"]))
+            # Require transmissive reflectivity not higher than opaque near-surface reflectivity
+>           assert (
+                float(res["reflectivity"][i_near])
+                <= float(res_op["reflectivity"][j_near]) + 1e-6
+            )
+E           assert 0.05306122452020645 <= (0.035855893045663834 + 1e-06)
+E            +  where 0.05306122452020645 = float(0.053061225)
+E            +  and   0.035855893045663834 = float(0.035855893)
+
+tests/lidar/test_lidar_baked_transmission.py:76: AssertionError
+----------------------------- Captured stdout call -----------------------------
+DEBUG: Socket Base Color is UNLINKED. Default: <bpy_float[4], NodeSocketColor.default_value>
+DEBUG: Converted default to RGBA: (0.8999999761581421, 0.8999999761581421, 0.8999999761581421, 1.0)
+DEBUG: Baking Base Color on Plane.001...
+Fra:1 Mem:66.35M (Peak 210.61M) | Time:489914:01:29.52 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane
+Fra:1 Mem:66.35M (Peak 210.61M) | Time:489914:01:29.52 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane.001
+Fra:1 Mem:66.35M (Peak 210.61M) | Time:489914:01:29.52 | Mem:0.00M, Peak:0.00M | Scene | Initializing
+Fra:1 Mem:66.35M (Peak 210.61M) | Time:489914:01:29.52 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading LiDAR_Principled_Shader_Nodetree_Base Color
+Info: Baking map saved to internal image, save it externally or pack it
+Error: Unable to locate link in node tree
+Error: Unable to locate link in node tree
+DEBUG: Socket Alpha is UNLINKED. Default: 1.0
+DEBUG: Converted default to RGBA: (1.0, 1.0, 1.0, 1.0)
+DEBUG: Baking Alpha on Plane.001...
+Fra:1 Mem:66.35M (Peak 210.61M) | Time:489914:01:35.00 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane
+Fra:1 Mem:66.35M (Peak 210.61M) | Time:489914:01:35.00 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane.001
+Fra:1 Mem:66.35M (Peak 210.61M) | Time:489914:01:35.00 | Mem:0.00M, Peak:0.00M | Scene | Initializing
+Fra:1 Mem:66.35M (Peak 210.61M) | Time:489914:01:35.00 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading LiDAR_Principled_Shader_Nodetree_Alpha
+Info: Baking map saved to internal image, save it externally or pack it
+Error: Unable to locate link in node tree
+Error: Unable to locate link in node tree
+____________________________ test_texture_variation ____________________________
+
+    def test_texture_variation():
+        """Intensity should vary across a textured surface (Image Texture)."""
+        plane, mat = make_plane_with_material(
+            size=2.0, location=(0, 0, 0)
+        )
+        _add_image_texture(mat)
+    
+        _ = make_camera(location=(0, 0, 5))
+        scene = bpy.context.scene
+        deps = bpy.context.evaluated_depsgraph_get()
+        cfg = LidarConfig()
+        cfg.auto_expose = False
+    
+        # Plane is 2x2, centered at 0. Extents: [-1, 1]
+        # UVs usually map [0,1] to the mesh.
+        # Left side (x < 0) -> UV u < 0.5 -> Black pixel
+        # Right side (x > 0) -> UV u > 0.5 -> White pixel
+    
+        # Point 1: Left side (-0.5, 0)
+        O1, D1, R1, A1 = _one_ray_at(-0.5, 0, 5, 0, 0, -1)
+        res1 = perform_raycasting(scene, deps, O1, D1, R1, A1, cfg)
+        int1 = float(res1["intensity"][0])
+    
+        # Point 2: Right side (0.5, 0)
+        O2, D2, R2, A2 = _one_ray_at(0.5, 0, 5, 0, 0, -1)
+        res2 = perform_raycasting(scene, deps, O2, D2, R2, A2, cfg)
+        int2 = float(res2["intensity"][0])
+    
+        print(f"Left (Black): {int1}, Right (White): {int2}")
+>       assert int1 < int2, "Darker part of texture should return less intensity"
+E       AssertionError: Darker part of texture should return less intensity
+E       assert 1.0 < 0.0
+
+tests/lidar/test_lidar_radiometry.py:136: AssertionError
+----------------------------- Captured stdout call -----------------------------
+DEBUG: Socket Base Color is LINKED to Image Texture
+DEBUG: Baking Base Color on Plane...
+Fra:1 Mem:66.22M (Peak 210.61M) | Time:489914:01:58.53 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane
+Fra:1 Mem:66.22M (Peak 210.61M) | Time:489914:01:58.53 | Mem:0.00M, Peak:0.00M | Scene | Initializing
+Fra:1 Mem:66.21M (Peak 210.61M) | Time:489914:01:58.53 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading LiDAR_Principled_Shader_Nodetree_Base Color
+Fra:1 Mem:74.21M (Peak 210.61M) | Time:489914:01:58.53 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading TestImg
+Info: Baking map saved to internal image, save it externally or pack it
+Error: Unable to locate link in node tree
+Error: Unable to locate link in node tree
+DEBUG: Socket Alpha is UNLINKED. Default: 1.0
+DEBUG: Converted default to RGBA: (1.0, 1.0, 1.0, 1.0)
+DEBUG: Baking Alpha on Plane...
+Fra:1 Mem:66.22M (Peak 210.61M) | Time:489914:02:03.51 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane
+Fra:1 Mem:66.22M (Peak 210.61M) | Time:489914:02:03.51 | Mem:0.00M, Peak:0.00M | Scene | Initializing
+Fra:1 Mem:66.21M (Peak 210.61M) | Time:489914:02:03.51 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading LiDAR_Principled_Shader_Nodetree_Alpha
+Fra:1 Mem:66.21M (Peak 210.61M) | Time:489914:02:03.51 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading TestImg
+Info: Baking map saved to internal image, save it externally or pack it
+Error: Unable to locate link in node tree
+Error: Unable to locate link in node tree
+Left (Black): 1.0, Right (White): 0.0
+___________________ test_metallic_vs_dielectric_reflectivity ___________________
+
+    def test_metallic_vs_dielectric_reflectivity():
+        """Metallic (m=1, low roughness) should be more reflective than dielectric."""
+        plane, mat = make_plane_with_material(
+            size=3.0,
+            location=(0, 0, 0),
+            base_color=(0.9, 0.9, 0.9, 1.0),
+            roughness=0.05,
+            metallic=0.0,
+        )
+        _ = make_camera(location=(0, 0, 3))
+        scene = bpy.context.scene
+        deps = bpy.context.evaluated_depsgraph_get()
+        O, D, R, A = _one_ray()
+    
+        # Dielectric bake
+        cfg = LidarConfig()
+        cfg.auto_expose = False
+        res_die = perform_raycasting(scene, deps, O, D, R, A, cfg)
+        assert res_die["reflectivity"].size == 1
+        R_die = float(res_die["reflectivity"][0])
+    
+        # Switch to metallic and re‑bake
+        _set_principled(mat, metallic=1.0, roughness=0.05)
+        res_met = perform_raycasting(scene, deps, O, D, R, A, cfg)
+        assert res_met["reflectivity"].size == 1
+        R_met = float(res_met["reflectivity"][0])
+    
+>       assert R_met >= R_die - 1e-6
+E       assert 0.0 >= (0.05306122452020645 - 1e-06)
+
+tests/lidar/test_metallic_extremes.py:58: AssertionError
+----------------------------- Captured stdout call -----------------------------
+DEBUG: Socket Base Color is UNLINKED. Default: <bpy_float[4], NodeSocketColor.default_value>
+DEBUG: Converted default to RGBA: (0.8999999761581421, 0.8999999761581421, 0.8999999761581421, 1.0)
+DEBUG: Baking Base Color on Plane...
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:02:13.06 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:02:13.06 | Mem:0.00M, Peak:0.00M | Scene | Initializing
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:02:13.06 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading LiDAR_Principled_Shader_Nodetree_Base Color
+Info: Baking map saved to internal image, save it externally or pack it
+Error: Unable to locate link in node tree
+Error: Unable to locate link in node tree
+DEBUG: Socket Alpha is UNLINKED. Default: 1.0
+DEBUG: Converted default to RGBA: (1.0, 1.0, 1.0, 1.0)
+DEBUG: Baking Alpha on Plane...
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:02:17.54 | Mem:0.00M, Peak:0.00M | Scene | Synchronizing object | Plane
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:02:17.54 | Mem:0.00M, Peak:0.00M | Scene | Initializing
+Fra:1 Mem:66.16M (Peak 210.61M) | Time:489914:02:17.54 | Mem:0.00M, Peak:0.00M | Scene | Updating Images | Loading LiDAR_Principled_Shader_Nodetree_Alpha
+Info: Baking map saved to internal image, save it externally or pack it
+Error: Unable to locate link in node tree
+Error: Unable to locate link in node tree
+=========================== short test summary info ============================
+FAILED tests/lidar/test_alpha_and_defaults.py::test_alpha_threshold_override_for_clip
+FAILED tests/lidar/test_baked_materials.py::test_albedo_change_updates_reflectivity
+FAILED tests/lidar/test_baked_materials.py::test_alpha_blend_and_clip - asser...
+FAILED tests/lidar/test_lidar_baked_transmission.py::test_transmission_reduces_reflectivity_and_adds_secondary
+FAILED tests/lidar/test_lidar_radiometry.py::test_texture_variation - Asserti...
+FAILED tests/lidar/test_metallic_extremes.py::test_metallic_vs_dielectric_reflectivity
+6 failed, 16 passed in 114.20s (0:01:54)
+/Users/erikdyer/Desktop/School/Infinigen-Rigid/infinigen_internal/Blender.app/Contents/MacOS/Blender -noaudio --background --python /Users/erikdyer/Desktop/School/Infinigen-Rigid/infinigen_internal/infinigen/tools/blendscript_path_append.py --python /Users/erikdyer/Desktop/School/Infinigen-Rigid/infinigen_internal/infinigen/tools/blendscript_path_append.py --python /Users/erikdyer/Desktop/School/Infinigen-Rigid/infinigen_internal/scripts/run_lidar_pytest.py -- --factory-startup tests/lidar/

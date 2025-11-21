@@ -9,9 +9,11 @@ except Exception:  # pragma: no cover
     bpy = None
     pytest.skip("Blender required", allow_module_level=True)
 
-from lidar.intensity_model import extract_material_properties
-from lidar.lidar_config import LidarConfig
-from lidar.lidar_raycast import perform_raycasting
+from infinigen.lidar.lidar_engine import (
+    LidarConfig,
+    extract_material_properties,
+    perform_raycasting,
+)
 from tests.lidar.conftest import _set_principled, make_camera, make_plane_with_material
 
 

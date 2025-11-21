@@ -170,6 +170,7 @@ class _BakedInput:
 class _NodeContext:
     tree: bpy.types.NodeTree
     node: bpy.types.ShaderNode
+    mat: Optional[bpy.types.Material] = None
 
 
 _PrincipledContext = _NodeContext
@@ -308,10 +309,25 @@ class PrincipledSampler:
                 }
             return sampled
 
-        base_rgba = self._sample_color(context, "Base Color", uv, obj)
-        roughness = self._sample_scalar(context, "Roughness", uv, obj)
-        metallic = self._sample_scalar(context, "Metallic", uv, obj)
-        transmission = self._sample_scalar(context, "Transmission", uv, obj)
+        # Resolve socket names for Blender 4.0+ compatibility
+        def _resolve(candidates):
+            for name in candidates:
+                if name in context.node.inputs:
+                    return name
+            return candidates[0]
+
+        base_color_name = _resolve(["Base Color"])
+        roughness_name = _resolve(["Roughness"])
+        metallic_name = _resolve(["Metallic"])
+        transmission_name = _resolve(["Transmission", "Transmission Weight"])
+        # In 4.0, Transmission Roughness is gone, it uses main Roughness.
+        # So if "Transmission Roughness" missing, default to 0.0 (or use main Roughness?)
+        # For now, let's try to find it, if not, it returns default 0.0.
+
+        base_rgba = self._sample_color(context, base_color_name, uv, obj)
+        roughness = self._sample_scalar(context, roughness_name, uv, obj)
+        metallic = self._sample_scalar(context, metallic_name, uv, obj)
+        transmission = self._sample_scalar(context, transmission_name, uv, obj)
         trans_rough = self._sample_scalar(
             context, "Transmission Roughness", uv, obj, default=0.0
         )
@@ -352,7 +368,8 @@ class PrincipledSampler:
             )
         else:
             # Principled Specular is defined so that Specular=0.5 → F0≈0.04
-            spec = self._sample_scalar(context, "Specular", uv, obj, default=0.5)
+            spec_name = _resolve(["Specular", "Specular IOR Level"])
+            spec = self._sample_scalar(context, spec_name, uv, obj, default=0.5)
             sample["specular"] = float(spec)
 
         return sample
@@ -366,7 +383,10 @@ class PrincipledSampler:
         if not (mat and getattr(mat, "use_nodes", False) and mat.node_tree):
             return None
         visited: set[int] = set()
-        return self._find_in_tree(mat.node_tree, visited, node_types)
+        ctx = self._find_in_tree(mat.node_tree, visited, node_types)
+        if ctx:
+            ctx.mat = mat
+        return ctx
 
     def _find_in_tree(
         self, tree: bpy.types.NodeTree, visited: set[int], node_types: set[str]
@@ -743,6 +763,21 @@ class PrincipledSampler:
             with contextlib.suppress(Exception):
                 bpy.ops.object.mode_set(mode="OBJECT")
 
+        # Ensure the material we are baking is active on the object
+        # This is critical for multi-material objects or if active_material is out of sync
+        found_slot = False
+        if context.mat:
+            for i, slot in enumerate(obj.material_slots):
+                if slot.material == context.mat:
+                    obj.active_material_index = i
+                    found_slot = True
+                    break
+
+        if not found_slot and context.mat:
+            # Fallback: if material not in slots (unlikely for valid sample), try to append?
+            # Or just proceed (might fail if context.mat is not on object)
+            pass
+
         tree = context.tree
         nodes = tree.nodes
         links = tree.links
@@ -751,11 +786,26 @@ class PrincipledSampler:
         if socket is None:
             return None
 
+        # Use the context's material tree, not just 'active_material' which might be stale
+        root_tree = (
+            context.mat.node_tree if context.mat else obj.active_material.node_tree
+        )
+        if root_tree is None:
+            return None
+
         # Ensure we target the root material tree for the bake image,
         # otherwise "No active image found" if inside a group.
-        root_tree = tree
+        # The above logic for root_tree should handle this, but keeping the original
+        # check for robustness if context.mat is None and active_material is also problematic.
         if obj.active_material and obj.active_material.node_tree:
-            root_tree = obj.active_material.node_tree
+            # If context.mat was None, root_tree would be obj.active_material.node_tree.
+            # This line ensures it's still the active material's tree if context.mat was used
+            # but the active material is different. This might need more thought.
+            # For now, prioritize context.mat's tree if available.
+            if (
+                context.mat is None
+            ):  # Only override if context.mat wasn't used to set root_tree
+                root_tree = obj.active_material.node_tree
 
         tree_name = getattr(tree, "name", "NodeTree")
         img = bpy.data.images.new(
@@ -768,6 +818,7 @@ class PrincipledSampler:
         # Create texture node in the root tree so bake operator sees it
         tex_node = root_tree.nodes.new("ShaderNodeTexImage")
         tex_node.image = img
+        tex_node.select = True
         root_tree.nodes.active = tex_node
 
         # Emission node stays in the context tree (where the signal is)
@@ -778,13 +829,18 @@ class PrincipledSampler:
         temp_nodes = []
 
         if socket.is_linked and socket.links:
+            print(
+                f"DEBUG: Socket {socket_name} is LINKED to {socket.links[0].from_node.name}"
+            )
             src = socket.links[0].from_socket
             created_links.append(links.new(src, emiss.inputs["Color"]))
         else:
             default = getattr(socket, "default_value", None)
+            print(f"DEBUG: Socket {socket_name} is UNLINKED. Default: {default}")
             rgb = nodes.new("ShaderNodeRGB")
             temp_nodes.append(rgb)
             tup = _to_rgba(default)
+            print(f"DEBUG: Converted default to RGBA: {tup}")
             rgb.outputs[0].default_value = tup  # type: ignore[arg-type]
             created_links.append(links.new(rgb.outputs[0], emiss.inputs["Color"]))
 
@@ -822,10 +878,25 @@ class PrincipledSampler:
             bpy.ops.object.select_all(action="DESELECT")
             obj.select_set(True)
             bpy.context.view_layer.objects.active = obj
+
+            # Ensure texture node is active and selected for baking
+            for n in root_tree.nodes:
+                n.select = False
+            tex_node.select = True
+            root_tree.nodes.active = tex_node
+
+            # Update view layer to ensure all links and nodes are synced
+            bpy.context.view_layer.update()
+
+            print(f"DEBUG: Baking {socket_name} on {obj.name}...")
             bpy.ops.object.bake(
                 type="EMIT", save_mode="INTERNAL", use_clear=True, margin=2
             )
         except Exception as exc:
+            print(f"DEBUG: Bake FAILED for {socket_name} on {obj.name}: {exc}")
+            import traceback
+
+            traceback.print_exc()
             # Cleanup and propagate
             baked = None
             err = exc
