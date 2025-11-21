@@ -205,6 +205,8 @@ class PrincipledSampler:
                         eval_obj.to_mesh_clear()  # type: ignore[attr-defined]
             finally:
                 self.mesh_cache.clear()
+                self.bake_cache.clear()
+                self.image_cache.clear()
                 self.mesh_epoch = frame_idx
 
     def sample(
@@ -614,15 +616,16 @@ class PrincipledSampler:
 
     def _sample_transparent(self, ctx, mat, uv, obj) -> Dict:
         color = self._sample_color(ctx, "Color", uv, obj)
-        alpha_mode, alpha_clip = self._alpha_settings(mat)
+        # Treat fully transparent as coverage=0 so the ray is culled under CLIP semantics.
+        _, alpha_clip = self._alpha_settings(mat)
         return {
             "base_color": tuple(float(c) for c in color[:3]),
             "metallic": 0.0,
             "roughness": 0.0,
             "transmission": 1.0,
             "transmission_roughness": 0.0,
-            "coverage": 1.0,
-            "alpha_mode": alpha_mode,
+            "coverage": 0.0,
+            "alpha_mode": "CLIP",
             "alpha_clip": alpha_clip,
             "specular": 0.5,
         }
@@ -748,9 +751,7 @@ class PrincipledSampler:
             getattr(obj.active_material, "name", "") if obj.active_material else ""
         )
         tree_name = getattr(context.tree, "name", "")
-        key = (mesh_name, mat_name, tree_name, context.node.name, socket_name)
-        if key in self.bake_cache:
-            return self.bake_cache[key]
+        base_key = (mesh_name, mat_name, tree_name, context.node.name, socket_name)
 
         scene = bpy.context.scene
         prev_engine = getattr(scene.render, "engine", "CYCLES")
@@ -785,6 +786,21 @@ class PrincipledSampler:
         socket = principled.inputs.get(socket_name)
         if socket is None:
             return None
+
+        # Decide a cache key that incorporates the data source so edits invalidate.
+        key = base_key + ("linked",)
+        if not (socket.is_linked and socket.links):
+            # Default/constant sockets: include current default value in key
+            try:
+                default_val = tuple(_to_rgba(socket.default_value))
+            except Exception:
+                default_val = ()
+            key = base_key + ("const", default_val)
+        elif socket.is_linked and socket.links:
+            key = base_key + ("linked", len(socket.links))
+
+        if key in self.bake_cache:
+            return self.bake_cache[key]
 
         # Use the context's material tree, not just 'active_material' which might be stale
         root_tree = (
@@ -831,9 +847,11 @@ class PrincipledSampler:
             with contextlib.suppress(Exception):
                 bpy.data.images.remove(img, do_unlink=True)
 
-            return _BakedInput(
+            baked = _BakedInput(
                 array=arr, width=self.bake_resolution, height=self.bake_resolution
             )
+            self.bake_cache[key] = baked
+            return baked
 
         # Optimization: If socket is LINKED to an Image Texture, read it directly!
         # This avoids "Circular dependency" and baking overhead.
@@ -842,6 +860,14 @@ class PrincipledSampler:
             from_node = link.from_node
             if from_node.type == "TEX_IMAGE" and from_node.image:
                 src_img = from_node.image
+                key = base_key + (
+                    "teximg",
+                    getattr(src_img, "library_filepath", ""),
+                    getattr(src_img, "name_full", getattr(src_img, "name", "")),
+                    tuple(getattr(src_img, "size", (0, 0))),
+                )
+                if key in self.bake_cache:
+                    return self.bake_cache[key]
                 try:
                     # Read pixels directly
                     arr = np.array(src_img.pixels[:], dtype=np.float32).reshape(
@@ -852,9 +878,11 @@ class PrincipledSampler:
                     with contextlib.suppress(Exception):
                         bpy.data.images.remove(img, do_unlink=True)
 
-                    return _BakedInput(
+                    baked = _BakedInput(
                         array=arr, width=src_img.size[0], height=src_img.size[1]
                     )
+                    self.bake_cache[key] = baked
+                    return baked
                 except Exception as exc:
                     print(
                         f"WARNING: Failed to read image pixels directly: {exc}. Falling back to bake."

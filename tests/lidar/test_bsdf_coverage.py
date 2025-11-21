@@ -90,15 +90,8 @@ def test_bsdf_coverage(bsdf_type, expected_behavior, clear_sampler_cache):
         # Glossy should be highly reflective (metal-like in our mapping)
         assert res["reflectivity"][0] > 0.5, "Glossy should be highly reflective"
     elif expected_behavior == "transparent":
-        # Transparent BSDF -> Opacity 0 -> Ray should be culled (no return)
-        # Note: perform_raycasting returns hits, but if alpha < threshold (default 0.5), it might be culled depending on mode.
-        # By default, blend_method is OPAQUE or BLEND. If BLEND, we get a return but with low intensity?
-        # Actually, _sample_transparent sets coverage=1.0? No, let's check code.
-        # _sample_transparent sets coverage based on color brightness?
-        # Wait, _sample_transparent logic:
-        # return { ... "coverage": 1.0 - brightness(color) ... }
-        # If color is white (1,1,1), coverage should be 0.
-        pass  # Logic verification needed in test execution
+        # Transparent BSDF should be treated as fully transparent (culled primary).
+        assert res["intensity"].size == 0
     elif expected_behavior == "diffuse_like":
         assert (
             res["transmittance"][0] < 0.01

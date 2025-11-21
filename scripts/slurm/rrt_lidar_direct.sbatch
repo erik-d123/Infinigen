@@ -60,7 +60,7 @@ if [[ ! -f "$OUT_ROOT/coarse/scene.blend" ]]; then
 fi
 
 # 2) Generate LiDAR directly from Principled materials
-"$PY" -m infinigen.launch_blender -m lidar.lidar_generator -- \
+"$PY" -m infinigen.launch_blender -m infinigen.lidar.lidar_generator -- \
   "$OUT_ROOT/coarse/scene.blend" \
   --output_dir "$OUT_ROOT/lidar" \
   --frames 1-200 \

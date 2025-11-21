@@ -316,12 +316,13 @@ def _build_header(
 
 def _stack_record_array(
     data: Dict,
-) -> Tuple[np.ndarray, Dict[str, bool], Optional[np.ndarray]]:
+) -> Tuple[np.ndarray, Dict[str, bool], Optional[np.ndarray], list[str]]:
     """Column‑stack core and optional attributes into a dense array for writing."""
     P = _coerce_points(data["points"])
     N = P.shape[0]
 
     cols = [P[:, 0], P[:, 1], P[:, 2]]
+    col_types: list[str] = ["xyz", "xyz", "xyz"]  # keep precision formatting for xyz
 
     # base
     arr = _coerce_col(data, "intensity", "u1", N)
@@ -338,21 +339,28 @@ def _stack_record_array(
     nret = arr if arr is not None else np.ones(N, "u1")
 
     cols += [intensity, ring, az, el, rid, nret]
+    col_types += ["i", "i", "f", "f", "i", "i"]
 
     # optionals
     have = {}
+
+    def _is_int_dtype(dt: str) -> bool:
+        return dt.lower().startswith(("u", "i"))
+
     for k, dt in _OPT_FIELDS:
         arr_opt = _coerce_col(data, k, dt, N)
         have[k] = arr_opt is not None
         if arr_opt is not None:
             cols.append(arr_opt)
+            col_types.append("i" if _is_int_dtype(dt) else "f")
 
     normals = _detect_normals(data, N)
     if normals is not None:
         cols += [normals[:, 0], normals[:, 1], normals[:, 2]]
+        col_types += ["f", "f", "f"]
 
     rec = np.column_stack(cols)
-    return rec, have, normals
+    return rec, have, normals, col_types
 
 
 def save_ply(
@@ -368,7 +376,7 @@ def save_ply(
     if "points" not in data:
         raise ValueError("save_ply: 'points' (N,3) array is required")
 
-    rec, have, normals = _stack_record_array(data)
+    rec, have, normals, col_types = _stack_record_array(data)
     N = rec.shape[0]
     header = _build_header(N, have, normals is not None, binary)
 
@@ -378,28 +386,14 @@ def save_ply(
             fh.write(header)
             # Write rows with exact number of columns
             for row in rec:
-                # cast to python types to avoid numpy repr noise
                 out = []
-                # x,y,z floats
-                out += [
-                    f"{float(row[0]):.8f}",
-                    f"{float(row[1]):.8f}",
-                    f"{float(row[2]):.8f}",
-                ]
-                # intensity u8, ring u16
-                out += [str(int(row[3])), str(int(row[4]))]
-                # azimuth, elevation
-                out += [f"{float(row[5]):.8f}", f"{float(row[6]):.8f}"]
-                # return_id, num_returns
-                out += [str(int(row[7])), str(int(row[8]))]
-                # remaining columns as floats/ints as present
-                for v in row[9:]:
-                    # detect integer columns by close-to-integer dtype in layout decision
-                    out.append(
-                        str(float(v))
-                        if isinstance(v, float) or np.issubdtype(type(v), np.floating)
-                        else str(int(v))
-                    )
+                for v, kind in zip(row, col_types):
+                    if kind == "xyz":
+                        out.append(f"{float(v):.8f}")
+                    elif kind == "i":
+                        out.append(str(int(v)))
+                    else:
+                        out.append(str(float(v)))
                 fh.write(" ".join(out) + "\n")
         return
 

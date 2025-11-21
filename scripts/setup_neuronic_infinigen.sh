@@ -199,7 +199,7 @@ if [[ "$RUN_SMOKE" == "true" ]]; then
     -g singleroom.gin \
     -p compose_indoors.terrain_enabled=False compose_indoors.restrict_single_supported_roomtype=True
 
-  python -m infinigen.launch_blender -m lidar.lidar_generator -- \
+  python -m infinigen.launch_blender -m infinigen.lidar.lidar_generator -- \
     "$OUT/coarse/scene.blend" \
     --output_dir "$OUT/lidar" \
     --frames 1-3 \

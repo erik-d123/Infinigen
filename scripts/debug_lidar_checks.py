@@ -21,11 +21,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-from lidar.intensity_model import extract_material_properties  # noqa: E402
-from lidar.lidar_config import LidarConfig  # noqa: E402
-from lidar.lidar_generator import process_frame  # noqa: E402
-from lidar.lidar_raycast import generate_sensor_rays  # noqa: E402
-from lidar.lidar_scene import sensor_to_camera_rotation  # noqa: E402
+from infinigen.lidar.lidar_engine import (  # noqa: E402
+    LidarConfig,
+    extract_material_properties,
+    generate_sensor_rays,
+    sensor_to_camera_rotation,
+)
+from infinigen.lidar.lidar_generator import process_frame  # noqa: E402
 
 
 def reset_scene():
