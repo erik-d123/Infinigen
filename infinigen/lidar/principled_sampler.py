@@ -819,9 +819,6 @@ class PrincipledSampler:
         # We can just create the array directly from the default value.
         if not (socket.is_linked and socket.links):
             default = getattr(socket, "default_value", None)
-            print(
-                f"DEBUG: Socket {socket_name} is UNLINKED. Default: {default}. Skipping Bake."
-            )
             tup = _to_rgba(default)
 
             # Create array filled with this value
@@ -844,9 +841,6 @@ class PrincipledSampler:
             link = socket.links[0]
             from_node = link.from_node
             if from_node.type == "TEX_IMAGE" and from_node.image:
-                print(
-                    f"DEBUG: Socket {socket_name} is LINKED to Image {from_node.image.name}. Skipping Bake."
-                )
                 src_img = from_node.image
                 try:
                     # Read pixels directly
@@ -900,9 +894,6 @@ class PrincipledSampler:
         )
 
         # Handle Input Connection (Linked case only now)
-        print(
-            f"DEBUG: Socket {socket_name} is LINKED to {socket.links[0].from_node.name}"
-        )
         src = socket.links[0].from_socket
         created_links.append(links.new(src, emiss.inputs["Color"]))
 
