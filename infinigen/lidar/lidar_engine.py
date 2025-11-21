@@ -25,9 +25,45 @@ from .principled_sampler import PrincipledSampleError, PrincipledSampler
 # 1. CONFIGURATION (from lidar_config.py)
 # ==============================================================================
 
-# Sensor presets tuned for indoor scenes (rings, max_range in meters)
+# Sensor presets with vertical FOV specifications
+# FOV angles are in degrees; beams distributed uniformly within range
 LIDAR_PRESETS: Dict[str, Dict[str, float]] = {
-    "OS0-128": {"rings": 128, "max_range": 50.0},
+    "VLP-16": {
+        "rings": 16,
+        "max_range": 100.0,
+        "min_v_angle": -15.0,
+        "max_v_angle": 15.0,
+    },
+    "HDL-32E": {
+        "rings": 32,
+        "max_range": 120.0,
+        "min_v_angle": -30.0,
+        "max_v_angle": 10.0,
+    },
+    "HDL-64E": {
+        "rings": 64,
+        "max_range": 120.0,
+        "min_v_angle": -24.8,
+        "max_v_angle": 2.0,
+    },
+    "OS0-128": {  # Indoor robotics standard (wide FOV)
+        "rings": 128,
+        "max_range": 50.0,
+        "min_v_angle": -45.0,
+        "max_v_angle": 45.0,
+    },
+    "OS1-128": {  # Mid-range outdoor (narrower FOV)
+        "rings": 128,
+        "max_range": 120.0,
+        "min_v_angle": -22.5,
+        "max_v_angle": 22.5,
+    },
+    "Hesai-QT128": {  # Ultra-wide indoor alternative
+        "rings": 128,
+        "max_range": 50.0,
+        "min_v_angle": -52.6,
+        "max_v_angle": 52.6,
+    },
 }
 
 
@@ -40,7 +76,7 @@ class LidarConfig:
     """
 
     # High-level
-    preset: str = "OS0-128"
+    preset: str = "OS0-128"  # Default to indoor-optimized sensor
     force_azimuth_steps: Optional[int] = None  # overrides azimuth columns if set
     ply_frame: str = "sensor"  # {"sensor","camera","world"}
     save_ply: bool = True
@@ -68,8 +104,10 @@ class LidarConfig:
     secondary_merge_eps: float = 0.0  # meters; merge close returns
 
     # Sensor layout
-    rings: int = 16  # overridden by preset
+    rings: int = 128  # overridden by preset
     azimuth_steps: int = 1800  # default column count
+    min_v_angle: float = -45.0  # vertical FOV lower bound (degrees)
+    max_v_angle: float = 45.0  # vertical FOV upper bound (degrees)
 
     # Internal/derived store for arbitrary extras
     extras: Dict[str, Any] = field(default_factory=dict)
@@ -81,6 +119,11 @@ class LidarConfig:
         if p := LIDAR_PRESETS.get(self.preset):
             self.rings = int(p["rings"])
             self.max_range = float(p["max_range"])
+            # Load vertical FOV from preset if available
+            if "min_v_angle" in p:
+                self.min_v_angle = float(p["min_v_angle"])
+            if "max_v_angle" in p:
+                self.max_v_angle = float(p["max_v_angle"])
 
         if self.force_azimuth_steps is not None:
             self.azimuth_steps = int(self.force_azimuth_steps)
@@ -708,9 +751,10 @@ def generate_sensor_rays(cfg) -> Dict[str, np.ndarray]:
     az_steps = int(
         getattr(cfg, "force_azimuth_steps", 0) or getattr(cfg, "azimuth_steps", 1800)
     )
-    # Elevation fan: OS0-128 uses 90 degree vertical FOV (+45 to -45)
-    # If other presets were supported, we would switch on cfg.preset here.
-    elev = np.linspace(-45.0, 45.0, rings) * (math.pi / 180.0)
+    # Elevation fan: use config-specified vertical FOV
+    min_v = float(getattr(cfg, "min_v_angle", -45.0))
+    max_v = float(getattr(cfg, "max_v_angle", 45.0))
+    elev = np.linspace(min_v, max_v, rings) * (math.pi / 180.0)
     az = np.linspace(-math.pi, math.pi, az_steps, endpoint=False)
 
     # Sensor frame: +X forward, +Y left, +Z up
