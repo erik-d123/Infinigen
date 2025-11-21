@@ -520,9 +520,21 @@ def extract_material_properties(
             obj, depsgraph, poly_index, hit_world, cfg
         )
     except PrincipledSampleError as err:
-        raise ValueError(
-            f"Principled sampling failed for object {getattr(obj, 'name', '<unknown>')}:{err}"
-        ) from err
+        # Fallback: Polygon has no material - use default gray diffuse
+        print(
+            f"WARNING: {getattr(obj, 'name', '<unknown>')}: {err}. Using default gray diffuse."
+        )
+        sampled = {
+            "base_color": (0.5, 0.5, 0.5),
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "transmission": 0.0,
+            "transmission_roughness": 0.0,
+            "coverage": 1.0,
+            "alpha_mode": "OPAQUE",
+            "alpha_clip": 0.5,
+            "specular": 0.5,
+        }
 
     props: Dict = {
         "base_color": sampled["base_color"],
