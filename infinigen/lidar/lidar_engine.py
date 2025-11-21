@@ -47,18 +47,18 @@ class LidarConfig:
     ply_binary: bool = False
 
     # Radiometry and exposure
-    distance_power: float = 2.0  # intensity ∝ 1 / r^p
+    distance_power: float = 0.2  # intensity ∝ 1 / r^0.2 (game-like falloff)
     auto_expose: bool = False
     global_scale: float = 1.0  # used when auto_expose=False
     target_percentile: float = 95.0  # auto exposure
     target_intensity: float = 200.0  # 8-bit target
 
     # Ranges and angular dropout
-    min_range: float = 0.05  # indoor close hits
+    min_range: float = 0.1  # indoor close hits
     max_range: float = 100.0  # overridden by preset
-    grazing_dropout_cos_thresh: float = 0.05  # skip shallow hits
+    grazing_dropout_cos_thresh: float = 0.0  # disable grazing dropout
     # Mild angle attenuation of specular lobe to account for footprint effects
-    specular_angle_power: float = 0.5  # multiplier: R_spec *= cos_i ** k
+    specular_angle_power: float = 0.0  # disable specular angle attenuation
 
     # Secondary return controls (pass-through)
     enable_secondary: bool = False
