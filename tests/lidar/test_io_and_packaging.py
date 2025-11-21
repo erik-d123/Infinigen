@@ -27,7 +27,7 @@ def test_process_frame_writes_outputs(tmp_path):
 
     out_dir = tmp_path / "lidar"
     out_dir.mkdir(parents=True, exist_ok=True)
-    cfg = LidarConfig(preset="VLP-16")
+    cfg = LidarConfig(preset="OS0-128")
     cfg.auto_expose = False
     process_frame(scene, cam, cfg, out_dir, frame=1)
 

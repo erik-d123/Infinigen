@@ -381,7 +381,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     p.add_argument("--frames", type=str, default="1", help="e.g. '1-48' or '1,5,10'")
     p.add_argument("--camera", type=str, default="Camera", help="Camera object name")
-    p.add_argument("--preset", type=str, default="VLP-16", help="Sensor preset")
+    p.add_argument("--preset", type=str, default="OS0-128", help="Sensor preset")
     p.add_argument(
         "--force-azimuth-steps", type=int, default=None, help="Override azimuth columns"
     )

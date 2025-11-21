@@ -27,10 +27,7 @@ from .principled_sampler import PrincipledSampleError, PrincipledSampler
 
 # Sensor presets tuned for indoor scenes (rings, max_range in meters)
 LIDAR_PRESETS: Dict[str, Dict[str, float]] = {
-    "VLP-16": {"rings": 16, "max_range": 100.0},
-    "HDL-32E": {"rings": 32, "max_range": 120.0},
-    "HDL-64E": {"rings": 64, "max_range": 120.0},
-    "OS1-128": {"rings": 128, "max_range": 120.0},
+    "OS0-128": {"rings": 128, "max_range": 50.0},
 }
 
 
@@ -43,7 +40,7 @@ class LidarConfig:
     """
 
     # High-level
-    preset: str = "VLP-16"
+    preset: str = "OS0-128"
     force_azimuth_steps: Optional[int] = None  # overrides azimuth columns if set
     ply_frame: str = "sensor"  # {"sensor","camera","world"}
     save_ply: bool = True
@@ -711,8 +708,9 @@ def generate_sensor_rays(cfg) -> Dict[str, np.ndarray]:
     az_steps = int(
         getattr(cfg, "force_azimuth_steps", 0) or getattr(cfg, "azimuth_steps", 1800)
     )
-    # Elevation fan: linear indoor default if preset not provided
-    elev = np.linspace(-15.0, 15.0, rings) * (math.pi / 180.0)
+    # Elevation fan: OS0-128 uses 90 degree vertical FOV (+45 to -45)
+    # If other presets were supported, we would switch on cfg.preset here.
+    elev = np.linspace(-45.0, 45.0, rings) * (math.pi / 180.0)
     az = np.linspace(-math.pi, math.pi, az_steps, endpoint=False)
 
     # Sensor frame: +X forward, +Y left, +Z up
