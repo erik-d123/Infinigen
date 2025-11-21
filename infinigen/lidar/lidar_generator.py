@@ -405,6 +405,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     p.add_argument("--seed", type=int, default=0)
     # Baked textures directory (required); auto-detected when present next to the scene
+    p.add_argument(
+        "--finish-marker", type=str, default=None, help="Path to touch on success"
+    )
     return p.parse_args(argv)
 
 
@@ -433,6 +436,10 @@ def main(argv: Sequence[str] | None = None):
         camera_name=args.camera,
         cfg_kwargs=cfg_kwargs,
     )
+
+    if args.finish_marker:
+        Path(args.finish_marker).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.finish_marker).touch()
 
 
 if __name__ == "__main__":

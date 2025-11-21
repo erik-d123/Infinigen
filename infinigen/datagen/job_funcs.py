@@ -781,6 +781,8 @@ def queue_lidar(
         "--preset",
         lidar_preset,
         "--auto-expose",
+        "--finish-marker",
+        str(Path(folder) / "logs" / f"FINISH_{taskname}"),
     ]
 
     with (folder / "run_pipeline.sh").open("a") as f:
